@@ -1,0 +1,33 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0E1328" />
+      <stop offset="1" stop-color="#251B21" />
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(908 160) rotate(90) scale(150 150)">
+      <stop offset="0" stop-color="#F0D98B" stop-opacity="0.45" />
+      <stop offset="1" stop-color="#F0D98B" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)" />
+  <circle cx="930" cy="170" r="150" fill="url(#glow)" />
+  <g transform="translate(102,124)">
+    <rect x="0" y="0" width="382" height="382" rx="68" fill="#141A34" stroke="rgba(214,180,92,0.35)" />
+    <circle cx="102" cy="94" r="4" fill="#F4ECD6" opacity="0.6" />
+    <circle cx="152" cy="72" r="3" fill="#F4ECD6" opacity="0.45" />
+    <circle cx="84" cy="126" r="2.8" fill="#F4ECD6" opacity="0.35" />
+    <circle cx="281" cy="72" r="34" fill="#EFD68F" />
+    <circle cx="296" cy="62" r="29" fill="#141A34" />
+    <rect x="86" y="243" width="220" height="50" rx="8" fill="#6E2B2B" stroke="#D6B45C" stroke-width="4" />
+    <rect x="98" y="189" width="198" height="48" rx="8" fill="#B0863A" stroke="#D6B45C" stroke-width="4" />
+    <rect x="110" y="136" width="176" height="46" rx="8" fill="#2C4A3B" stroke="#D6B45C" stroke-width="4" />
+    <g stroke="#EFD68F" stroke-width="4" opacity="0.95">
+      <line x1="122" y1="244" x2="122" y2="288" />
+      <line x1="138" y1="190" x2="138" y2="232" />
+      <line x1="154" y1="138" x2="154" y2="180" />
+    </g>
+  </g>
+  <text x="564" y="260" fill="#F4ECD6" font-size="84" font-family="Inter, Arial, sans-serif" font-weight="700">Bindary</text>
+  <text x="564" y="340" fill="#EFD68F" font-size="40" font-family="Fraunces, Georgia, serif" font-style="italic">Finish something. Bind its poem.</text>
+  <text x="564" y="410" fill="rgba(236,227,208,0.72)" font-size="28" font-family="Inter, Arial, sans-serif">A task library with poems for every completed thing.</text>
+</svg>

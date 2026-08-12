@@ -1,0 +1,22 @@
+{
+  "name": "Bindary",
+  "short_name": "Bindary",
+  "description": "Finish something. Bind its poem.",
+  "start_url": "/pages/Bindary/",
+  "scope": "/pages/Bindary/",
+  "display": "standalone",
+  "background_color": "#12161C",
+  "theme_color": "#12161C",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "/apple-touch-icon.svg",
+      "sizes": "180x180",
+      "type": "image/svg+xml"
+    }
+  ]
+}
