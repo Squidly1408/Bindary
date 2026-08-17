@@ -1,8 +1,15 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { BookOpen, Plus, X, ChevronLeft, ChevronRight, Trash2, Moon, Sparkles, Check, Calendar as CalIcon, List as ListIcon } from "lucide-react";
-import { createUserWithEmailAndPassword, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { BookOpen, Plus, X, ChevronLeft, ChevronRight, Trash2, Moon, Sparkles, Check, Calendar as CalIcon, List as ListIcon, Settings as SettingsIcon, Clock } from "lucide-react";
+import {
+  createUserWithEmailAndPassword, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signOut,
+  updateProfile, updateEmail, updatePassword, reauthenticateWithCredential, EmailAuthProvider,
+} from "firebase/auth";
 import { collection, deleteDoc, doc, onSnapshot, orderBy, query, setDoc } from "firebase/firestore";
 import { auth, db, configureAuthPersistence, firebaseReady, getFirebaseConfigStatus } from "./src/firebase.js";
+import {
+  TIERS as RARITY, TIER_RANK as RARITY_RANK, tierOf as rarityOf, migrateLegacyRarity,
+  generateBook, generateSubtaskPage as generateBookSubtaskPage,
+} from "./src/bookGenerator.js";
 
 /* ------------------------------------------------------------------ *
  *  Bindary — finish a task, and its poem is bound into your library.
@@ -11,109 +18,90 @@ import { auth, db, configureAuthPersistence, firebaseReady, getFirebaseConfigSta
 
 const SHELF_CAPACITY = 5;
 
-/* ---------- cloth binding palette (spine colors) ---------- */
-const CLOTHS = [
-  { bg: "#6E2B2B", cap: "#521E1E" }, // oxblood
-  { bg: "#2C4A3B", cap: "#1F3529" }, // forest
-  { bg: "#26374F", cap: "#1A2839" }, // navy
-  { bg: "#4A2F52", cap: "#35213B" }, // plum
-  { bg: "#7A3E24", cap: "#5A2C18" }, // rust
-  { bg: "#21514E", cap: "#173B39" }, // teal
-  { bg: "#3A4351", cap: "#29303B" }, // slate
-  { bg: "#5C5323", cap: "#433C18" }, // olive-gold
-  { bg: "#5A2540", cap: "#3F1A2D" }, // burgundy
-  { bg: "#2A2E5A", cap: "#1D2040" }, // indigo
-  { bg: "#3E4A2A", cap: "#2B341C" }, // moss
-  { bg: "#6E5230", cap: "#4E3A20" }, // bronze
-  { bg: "#432A4A", cap: "#301D36" }, // aubergine
-  { bg: "#1F4148", cap: "#142E33" }, // petrol
-  { bg: "#8A4A34", cap: "#652F1F" }, // terracotta
-  { bg: "#4E2A2E", cap: "#371D20" }, // wine
-  { bg: "#2E4633", cap: "#203223" }, // ivy
-  { bg: "#3A3A46", cap: "#282833" }, // graphite
+/* ---------- legacy cloth palette — kept only so books bound before the v2 generator still render ---------- */
+const LEGACY_CLOTHS = [
+  { bg: "#6E2B2B", cap: "#521E1E" }, { bg: "#2C4A3B", cap: "#1F3529" }, { bg: "#26374F", cap: "#1A2839" },
+  { bg: "#4A2F52", cap: "#35213B" }, { bg: "#7A3E24", cap: "#5A2C18" }, { bg: "#21514E", cap: "#173B39" },
+  { bg: "#3A4351", cap: "#29303B" }, { bg: "#5C5323", cap: "#433C18" }, { bg: "#5A2540", cap: "#3F1A2D" },
+  { bg: "#2A2E5A", cap: "#1D2040" }, { bg: "#3E4A2A", cap: "#2B341C" }, { bg: "#6E5230", cap: "#4E3A20" },
+  { bg: "#432A4A", cap: "#301D36" }, { bg: "#1F4148", cap: "#142E33" }, { bg: "#8A4A34", cap: "#652F1F" },
+  { bg: "#4E2A2E", cap: "#371D20" }, { bg: "#2E4633", cap: "#203223" }, { bg: "#3A3A46", cap: "#282833" },
 ];
+/* a book's cloth colors: the v2 generator resolves them per-genre and stores them directly on the book */
+const clothOf = (book) => (book.clothBg ? { bg: book.clothBg, cap: book.clothCap } : LEGACY_CLOTHS[(book.color || 0) % LEGACY_CLOTHS.length]);
 
 /* ---------- importance tiers ---------- */
 const TYPES = {
+  daily:      { label: "Daily",      color: "#7FB0D9", chipBg: "rgba(127,176,217,0.16)",  rank: 3 },
   task:       { label: "Task",       color: "#8FB0A6", chipBg: "rgba(143,176,166,0.16)", rank: 0 },
   assignment: { label: "Assignment", color: "#D6B45C", chipBg: "rgba(214,180,92,0.16)",  rank: 1 },
   exam:       { label: "Exam",       color: "#D9736A", chipBg: "rgba(217,115,106,0.16)",  rank: 2 },
 };
-const TYPE_ORDER = ["task", "assignment", "exam"];
+const TYPE_ORDER = ["daily", "task", "assignment", "exam"];
 const typeOf = (t) => TYPES[t] || TYPES.task;
+const isDaily = (t) => t.type === "daily";
 
-/* ---------- rarity (an endless collection: no two alike) ---------- */
-const RARITY = [
-  { key: "common",   name: "Common",        weight: 720, color: "#C7BB99", ink: "#6E6344" },
-  { key: "uncommon", name: "Uncommon",      weight: 200, color: "#8FB0A6", ink: "#3E6B5E" },
-  { key: "rare",     name: "Rare",          weight: 62,  color: "#8FB6E6", ink: "#33608F" },
-  { key: "fine",     name: "Fine",          weight: 16,  color: "#E6C976", ink: "#8A6A1E" },
-  { key: "first",    name: "First edition", weight: 2,   color: "#F2DE9A", ink: "#96690F" },
-];
-const RARITY_RANK = { common: 0, uncommon: 1, rare: 2, fine: 3, first: 4 };
-const rarityOf = (k) => RARITY.find((r) => r.key === k) || RARITY[0];
-function rollRarity() {
-  const total = RARITY.reduce((s, r) => s + r.weight, 0);
-  let x = Math.random() * total;
-  for (const r of RARITY) { if ((x -= r.weight) < 0) return r.key; }
-  return "common";
+/* ---------- settings ---------- */
+const DEFAULT_SETTINGS = { examLeadDays: 7, assignmentLeadDays: 21 };
+/* has this assignment/exam entered its "show in today's agenda" window? stays true once overdue, too */
+function inLeadWindow(task, settings, today) {
+  if (!task.due) return false;
+  if (task.type === "exam") return daysBetween(task.due, today) <= (settings.examLeadDays ?? DEFAULT_SETTINGS.examLeadDays);
+  if (task.type === "assignment") return daysBetween(task.due, today) <= (settings.assignmentLeadDays ?? DEFAULT_SETTINGS.assignmentLeadDays);
+  return false;
 }
-const BINDINGS = ["cloth boards", "buckram", "linen", "quarter calf", "morocco", "vellum", "marbled boards", "half leather", "paper wraps", "pressed silk"];
-const randOf = (a) => a[Math.floor(Math.random() * a.length)];
-
-const MOTIFS = [
-  "moth", "key", "thread", "candle", "ink", "glass", "feather", "laurel",
-  "river stone", "brass leaf", "salt", "ember", "paper crane", "storm glass",
-  "violet", "needle", "moonbeam", "sparrow", "archive tag", "wax seal",
-];
-const ACCENTS = [
-  "amber", "ash", "copper", "mist", "violet", "cedar", "opal", "sable",
-  "moss", "linden", "pearl", "smoke", "indigo", "bronze", "chalk", "teal",
-];
-
-function pickFrom(list, rand) {
-  return list[Math.floor(rand() * list.length)];
-}
-
-function buildBookIdentity(task, type, bookId) {
-  const seed = hashInt(`${bookId}|${task}|${type}`);
-  const rand = mulberry(seed);
-  const motif = pickFrom(MOTIFS, rand);
-  const accent = pickFrom(ACCENTS, rand);
-  const bindingForm = pickFrom(BINDINGS, rand);
-  const paperTone = pickFrom(["ivory", "bone", "fog", "old gold", "cream", "ash white", "eggshell", "pale sand"], rand);
-  const edgeTint = pickFrom(["copper", "indigo", "emerald", "wine", "amber", "graphite", "teal", "rose ash"], rand);
-  const classification = pickFrom(["archive", "folio", "ledger", "atlas", "codex", "register", "manual", "compendium"], rand);
-  const seriesMark = `${String(Math.floor(rand() * 900) + 100)}-${String.fromCharCode(65 + Math.floor(rand() * 26))}${String.fromCharCode(65 + Math.floor(rand() * 26))}`;
-  return {
-    motif,
-    accent,
-    bindingForm,
-    paperTone,
-    edgeTint,
-    classification,
-    seriesMark,
-    editionNote: `Filed under ${motif} in ${accent} light.`,
-    spineMark: motif.slice(0, 1).toUpperCase(),
-    spineShift: Math.floor(rand() * 16) - 8,
-    spineTilt: Math.floor(rand() * 5) - 2,
-    spineBands: 1 + Math.floor(rand() * 4),
-    spineDivision: 1 + Math.floor(rand() * 3),
-    spineGlyph: pickFrom(["✦", "✧", "◈", "▣", "◆", "◇", "✺", "✹"], rand),
-  };
-}
+/* daily tasks don't get permanently "done" — they're done for today, then reset at midnight */
+const isDoneToday = (task, today) => (isDaily(task) ? task.lastCompletedDate === today : !!task.done);
 
 /* ---------- tiny utils ---------- */
 const pad = (n) => String(n).padStart(2, "0");
 const toKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const daysBetween = (dueKey, todayKey) => Math.round((parseKey(dueKey) - parseKey(todayKey)) / 86400000);
 const parseKey = (k) => { const [y, m, d] = k.split("-").map(Number); return new Date(y, m - 1, d); };
 const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
 
-function hashInt(str) {
-  let h = 2166136261;
-  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return h >>> 0;
+/* ---------- subtask tree helpers (subtasks can themselves have subtasks, any depth) ---------- */
+function newSubtask(text) {
+  return { id: uid(), text: text.trim(), done: false, subtasks: [] };
 }
+/* find `id` anywhere in the tree and replace it with fn(node) */
+function mapSubtaskTree(list, id, fn) {
+  return (list || []).map((n) => (n.id === id ? fn(n) : { ...n, subtasks: mapSubtaskTree(n.subtasks, id, fn) }));
+}
+/* remove `id` from wherever it is in the tree */
+function removeFromSubtaskTree(list, id) {
+  return (list || []).filter((n) => n.id !== id).map((n) => ({ ...n, subtasks: removeFromSubtaskTree(n.subtasks, id) }));
+}
+/* append newNode under the node matching parentId, anywhere in the tree */
+function addToSubtaskTree(list, parentId, node) {
+  return (list || []).map((n) => (
+    n.id === parentId
+      ? { ...n, subtasks: [...(n.subtasks || []), node] }
+      : { ...n, subtasks: addToSubtaskTree(n.subtasks, parentId, node) }
+  ));
+}
+/* clear every `done` flag in the tree, keeping its shape */
+function zeroSubtaskTree(list) {
+  return (list || []).map((n) => ({ ...n, done: false, subtasks: zeroSubtaskTree(n.subtasks) }));
+}
+/* a Daily task's subtask checklist resets each night, same as the task itself — computed, never mutated in storage */
+function effectiveSubtasks(task, today) {
+  const list = task.subtasks || [];
+  return isDaily(task) && task.subtasksDate !== today ? zeroSubtaskTree(list) : list;
+}
+/* total / done counts across every descendant, any depth */
+function countSubtasks(list) {
+  let total = 0, done = 0;
+  for (const n of (list || [])) {
+    total += 1;
+    if (n.done) done += 1;
+    const child = countSubtasks(n.subtasks);
+    total += child.total; done += child.done;
+  }
+  return { total, done };
+}
+
+/* still used locally for the decorative starfield in the library sky */
 function mulberry(seed) {
   return function () {
     seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
@@ -122,7 +110,6 @@ function mulberry(seed) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-const titleCase = (s) => s.replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
 const prettyDate = (k) => parseKey(k).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
 function usePrefersReducedMotion() {
@@ -161,121 +148,22 @@ function friendlyAuthError(error) {
   if (code.includes("weak-password")) return "Use a stronger password (at least 6 characters).";
   if (code.includes("user-not-found") || code.includes("wrong-password") || code.includes("invalid-credential")) return "Email or password is incorrect.";
   if (code.includes("too-many-requests")) return "Too many attempts. Try again in a little while.";
-  return "Could not sign in right now. Check your Firebase config and try again.";
+  if (code.includes("requires-recent-login")) return "Please sign out and back in, then try again.";
+  return "Something went wrong. Check the details and try again.";
 }
+const SETTINGS_OK_MSGS = new Set(["Saved.", "Email updated.", "Password updated."]);
+const settingsMsgColor = (msg) => (SETTINGS_OK_MSGS.has(msg) ? "#5E7A5C" : "#8A2E25");
 
-/* ---------- poem generation ---------- */
-function cleanTask(task) {
-  let t = (task || "").trim().replace(/[.!?;:,]+$/, "").toLowerCase();
-  t = t.replace(/^(please\s+)?(go\s+)?(do|finish|complete|submit|hand in|study for|study|write|read|revise|prepare( for)?|work on|practice|practise|review|start|draft|edit|fix|make|build|plan)\s+/i, "");
-  t = t.replace(/^(the|a|an|my|our|your|this|that|some)\s+/i, "");
-  return t.trim();
-}
+/* poem/title/cover generation now lives in ./src/bookGenerator.js (the v2 procedural book system) */
 
-const POEM_OPENERS = [
-  "After the final click, the room keeps breathing",
-  "When the work is done, the light changes its mind",
-  "Tonight the desk opens like a held door",
-  "The hour after finishing is a different country",
-  "I set the task down and the air remembers me",
-  "The last checkmark leaves a bright scar in the evening",
-  "In the hush after effort, everything is newly arranged",
-];
-const POEM_VERBS = [
-  "folds", "leans", "settles", "drifts", "shimmers", "loosens", "returns", "stays", "turns", "wakes", "forgives", "echoes",
-];
-const POEM_NOUNS = [
-  "the page", "the lamp", "the window", "my hands", "the shelf", "the chair", "the clock", "the notebook", "the hallway", "the moon",
-  "the margin", "the desk", "the evening", "the floor", "the silence",
-];
-const POEM_IMAGES = [
-  "with dust in its edges", "in a thin seam of gold", "like water under ice", "against a collar of night", "through a small gate of breath",
-  "beside the grain of wood", "under a ribbon of shadow", "inside a pocket of stillness", "under a rim of weather", "with its own private weather",
-];
-const POEM_TASK_ENDINGS = [
-  "I finished the {TASK} and kept the shape of it.",
-  "The {TASK} no longer asks for my hands.",
-  "What remained of the {TASK} was only calm.",
-  "The {TASK} gave back its weight and became memory.",
-  "I carried the {TASK} to the end and came back lighter.",
-  "The {TASK} is now a closed door with warm hinges.",
-];
-const POEM_TURNS = [
-  "What was friction becomes a kind of weather.",
-  "The body loosens before the mind admits it.",
-  "Even relief has a texture, and tonight I can feel it.",
-  "The room grows wider by exactly the amount I needed.",
-  "Something in me files itself under done.",
-  "A quieter version of me steps forward and nods.",
-];
-const POEM_CLOSERS = [
-  "This copy belongs to the version of me that finished it.",
-  "Filed with the others, but never quite the same.",
-  "Bound for this hour only, and no other.",
-  "No duplicate will carry this exact weather again.",
-  "It lives here once, and only once.",
-  "The shelf keeps it, but the moment cannot be repeated.",
-];
-const TITLE_HEADS = ["Ledger", "Codex", "Atlas", "Archive", "Tally", "Index", "Register", "Volume", "Field", "Table"];
-const TITLE_MIDDLES = ["of", "for", "under", "against", "beside", "within", "after", "through"];
-const TITLE_SUBJECTS = ["Quiet Work", "Small Victories", "the Finished Hour", "One Exact Ending", "Late Light", "the Long Minute", "the Last Checkmark", "the Tired Hand", "ordinary weather", "a closed task"];
-const TITLE_SUFFIXES = ["I", "II", "III", "IV", "V", "A", "B", "C", "North", "South", "Field Edition", "Private Copy"];
-
-function uniqueLines(lines) {
-  const seen = new Set();
-  return lines.filter((line) => {
-    const key = line.trim().toLowerCase();
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function generateBookTitle(rand, clean, identity) {
-  const patterns = [
-    () => `${pickFrom(TITLE_HEADS, rand)} ${pickFrom(TITLE_MIDDLES, rand)} ${pickFrom(TITLE_SUBJECTS, rand)}`,
-    () => `${pickFrom(TITLE_SUBJECTS, rand)} ${pickFrom(TITLE_SUFFIXES, rand)}`,
-    () => `${pickFrom(TITLE_HEADS, rand)} ${pickFrom(TITLE_SUBJECTS, rand)}`,
-    () => `${pickFrom(TITLE_HEADS, rand)} ${pickFrom(TITLE_MIDDLES, rand)} ${clean ? titleCase(clean.slice(0, 18)) : pickFrom(TITLE_SUBJECTS, rand)}`,
-  ];
-  const raw = patterns[Math.floor(rand() * patterns.length)]();
-  const embellish = rand() > 0.65 ? ` ${pickFrom(TITLE_SUFFIXES, rand)}` : "";
-  const title = `${raw}${embellish}`.replace(/\s+/g, " ").trim();
-  return titleCase(title).slice(0, 60);
-}
-
-function generateBookPoem(task, type, identity) {
-  const clean = cleanTask(task);
-  const seed = hashInt(`${identity.seriesMark}|${identity.motif}|${identity.accent}|${task}|${type}`);
-  const rand = mulberry(seed);
-  const lineCount = 7 + Math.floor(rand() * 4);
-  const lines = [];
-
-  lines.push(pickFrom(POEM_OPENERS, rand) + ".");
-  lines.push(`The ${pickFrom(POEM_NOUNS, rand)} ${pickFrom(POEM_VERBS, rand)} ${pickFrom(POEM_IMAGES, rand)}.`);
-  lines.push(pickFrom(POEM_TASK_ENDINGS, rand).replace("{TASK}", clean || "work"));
-  lines.push(`A ${identity.motif} keeps its ${identity.accent} color in the corner of the page.`);
-  lines.push(pickFrom(POEM_TURNS, rand));
-
-  while (lines.length < lineCount - 2) {
-    const next = rand() > 0.5
-      ? `${pickFrom(POEM_NOUNS, rand)} ${pickFrom(POEM_VERBS, rand)} ${pickFrom(POEM_IMAGES, rand)}.`
-      : `${pickFrom(POEM_OPENERS, rand)}.`;
-    lines.push(next);
+/* every completed node anywhere in the subtask tree, in reading order — independent of its parent's state */
+function flattenDoneSubtasks(list) {
+  const out = [];
+  for (const n of (list || [])) {
+    if (n.done) out.push(n.text);
+    out.push(...flattenDoneSubtasks(n.subtasks));
   }
-
-  lines.push(`Bound in ${identity.bindingForm}, with ${identity.paperTone} pages and ${identity.edgeTint} edges.`);
-  lines.push(identity.editionNote);
-
-  return uniqueLines(lines).join("\n");
-}
-
-function generatePoem(task, type, identity) {
-  const clean = cleanTask(task);
-  const rand = mulberry(hashInt(`${task}|${type}|${identity.seriesMark}|${identity.classification}`));
-  const title = generateBookTitle(rand, clean, identity);
-  const poem = generateBookPoem(task, type, identity);
-  return { title, poem };
+  return out;
 }
 
 /* ---------- brand mark ---------- */
@@ -340,6 +228,9 @@ export default function App() {
   const [authChecking, setAuthChecking] = useState(true);
   const [booksReady, setBooksReady] = useState(false);
   const [tasksReady, setTasksReady] = useState(false);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [settingsReady, setSettingsReady] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [authMode, setAuthMode] = useState("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -353,7 +244,7 @@ export default function App() {
   const reduce = usePrefersReducedMotion();
   const isDesktop = useMediaQuery(DESKTOP_BREAKPOINT);
   const firebaseStatus = useMemo(() => getFirebaseConfigStatus(), []);
-  const appReady = !authChecking && (!authUser || (booksReady && tasksReady));
+  const appReady = !authChecking && (!authUser || (booksReady && tasksReady && settingsReady));
 
   useEffect(() => {
     let active = true;
@@ -383,6 +274,8 @@ export default function App() {
         setTasks([]);
         setBooksReady(false);
         setTasksReady(false);
+        setSettings(DEFAULT_SETTINGS);
+        setSettingsReady(false);
       }
     });
 
@@ -394,14 +287,24 @@ export default function App() {
 
     setBooksReady(false);
     setTasksReady(false);
+    setSettingsReady(false);
     setSyncError("");
 
     const booksQuery = query(userCollectionPath(authUser.uid, "books"), orderBy("completedAt", "asc"));
     const tasksQuery = query(userCollectionPath(authUser.uid, "tasks"), orderBy("createdAt", "desc"));
 
     const unsubscribeBooks = onSnapshot(booksQuery, (snapshot) => {
-      setBooks(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
+      const loaded = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+      setBooks(loaded);
       setBooksReady(true);
+
+      /* one-time per book: remap any pre-v2 rarity key (e.g. "fine"/"first") into the current 7-tier system */
+      loaded.forEach((book) => {
+        const migrated = migrateLegacyRarity(book.rarity);
+        if (migrated !== book.rarity) {
+          setDoc(doc(userCollectionPath(authUser.uid, "books"), book.id), { rarity: migrated }, { merge: true }).catch(() => {});
+        }
+      });
     }, (error) => {
       setSyncError(error?.message || "Could not load saved books.");
       setBooksReady(true);
@@ -415,18 +318,41 @@ export default function App() {
       setTasksReady(true);
     });
 
+    const unsubscribeSettings = onSnapshot(doc(db, "users", authUser.uid), (snapshot) => {
+      const data = snapshot.data();
+      setSettings({
+        examLeadDays: typeof data?.examLeadDays === "number" ? data.examLeadDays : DEFAULT_SETTINGS.examLeadDays,
+        assignmentLeadDays: typeof data?.assignmentLeadDays === "number" ? data.assignmentLeadDays : DEFAULT_SETTINGS.assignmentLeadDays,
+      });
+      setSettingsReady(true);
+    }, (error) => {
+      setSyncError(error?.message || "Could not load settings.");
+      setSettingsReady(true);
+    });
+
     return () => {
       unsubscribeBooks();
       unsubscribeTasks();
+      unsubscribeSettings();
     };
   }, [authUser?.uid]);
 
   const booksRef = useMemo(() => (authUser && db ? userCollectionPath(authUser.uid, "books") : null), [authUser?.uid]);
   const tasksRef = useMemo(() => (authUser && db ? userCollectionPath(authUser.uid, "tasks") : null), [authUser?.uid]);
 
+  const updateSettings = useCallback(async (patch) => {
+    if (!authUser || !db) return;
+    setSettings((prev) => ({ ...prev, ...patch })); // optimistic
+    await setDoc(doc(db, "users", authUser.uid), patch, { merge: true });
+  }, [authUser]);
+
   const addTask = useCallback(async (text, due, type) => {
     if (!authUser || !tasksRef) return;
-    const t = { id: uid(), text: text.trim(), due: due || null, type: type || "task", done: false, createdAt: Date.now() };
+    const daily = type === "daily";
+    const t = {
+      id: uid(), text: text.trim(), due: daily ? null : (due || null), type: type || "task",
+      done: false, lastCompletedDate: null, subtasks: [], subtasksDate: null, createdAt: Date.now(),
+    };
     if (!t.text) return;
     await setDoc(doc(tasksRef, t.id), t);
     setTasks((prev) => (prev.some((item) => item.id === t.id) ? prev : [t, ...prev]));
@@ -438,26 +364,56 @@ export default function App() {
     setTasks((prev) => prev.filter((t) => t.id !== id));
   }, [authUser, tasksRef]);
 
+  /* subtasks are a pure checklist on the task doc — no poem, no auto-completing the parent */
+  const updateSubtasks = useCallback(async (taskId, transform) => {
+    if (!authUser || !tasksRef) return;
+    const current = tasks.find((t) => t.id === taskId);
+    if (!current) return;
+    const today = toKey(new Date());
+    /* a Daily task's checklist resets nightly — any edit on a stale tree starts from a cleared copy */
+    const updated = {
+      ...current,
+      subtasks: transform(effectiveSubtasks(current, today)),
+      ...(isDaily(current) ? { subtasksDate: today } : {}),
+    };
+    await setDoc(doc(tasksRef, taskId), updated);
+    setTasks((prev) => prev.map((t) => (t.id === taskId ? updated : t)));
+  }, [authUser, tasks, tasksRef]);
+
+  const addSubtask = useCallback((taskId, parentId, text) => {
+    if (!text.trim()) return;
+    const node = newSubtask(text);
+    updateSubtasks(taskId, (list) => (parentId === taskId ? [...list, node] : addToSubtaskTree(list, parentId, node)));
+  }, [updateSubtasks]);
+
+  const toggleSubtask = useCallback((taskId, subtaskId) => {
+    updateSubtasks(taskId, (list) => mapSubtaskTree(list, subtaskId, (n) => ({ ...n, done: !n.done })));
+  }, [updateSubtasks]);
+
+  const deleteSubtask = useCallback((taskId, subtaskId) => {
+    updateSubtasks(taskId, (list) => removeFromSubtaskTree(list, subtaskId));
+  }, [updateSubtasks]);
+
   const completeTask = useCallback(async (task) => {
-    if (task.done || bindingId || !authUser || !booksRef || !tasksRef) return;
+    const today = toKey(new Date());
+    if (isDoneToday(task, today) || bindingId || !authUser || !booksRef || !tasksRef) return;
     setBindingId(task.id);
     try {
       const bookId = uid();
-      const identity = buildBookIdentity(task.text, task.type, bookId);
-      const { title, poem } = await generatePoem(task.text, task.type, identity);
+      const identity = generateBook(bookId, task.text, task.type);
+      const subtaskPages = flattenDoneSubtasks(effectiveSubtasks(task, today))
+        .map((text) => generateBookSubtaskPage(bookId, text, task.type, identity.genre));
+      const pages = [{ heading: null, poem: identity.poem }, ...subtaskPages];
       const book = {
         id: bookId,
-        title,
-        poem,
+        pages,
         taskName: task.text,
         type: task.type || "task",
         completedAt: Date.now(),
-        color: Math.floor(Math.random() * CLOTHS.length),
-        rarity: rollRarity(),
-        material: randOf(BINDINGS),
+        material: identity.bindingForm,
         ...identity,
       };
-      const updatedTask = { ...task, done: true };
+      const updatedTask = isDaily(task) ? { ...task, lastCompletedDate: today } : { ...task, done: true };
       await setDoc(doc(booksRef, book.id), book);
       await setDoc(doc(tasksRef, task.id), updatedTask);
       setBooks((prev) => (prev.some((item) => item.id === book.id) ? prev : [...prev, book]));
@@ -474,7 +430,7 @@ export default function App() {
     if (!authUser || !tasksRef) return;
     const currentTask = tasks.find((item) => item.id === id);
     if (!currentTask) return;
-    const reopened = { ...currentTask, done: false };
+    const reopened = isDaily(currentTask) ? { ...currentTask, lastCompletedDate: null } : { ...currentTask, done: false };
     await setDoc(doc(tasksRef, id), reopened);
     setTasks((prev) => prev.map((t) => (t.id === id ? reopened : t)));
   }, [authUser, tasks, tasksRef]);
@@ -571,7 +527,7 @@ export default function App() {
 
             <div className="sidebar-stats">
               <div className="sidebar-stat"><BookOpen size={15} /> {books.length} {books.length === 1 ? "book" : "books"}</div>
-              <div className="sidebar-stat"><ListIcon size={15} /> {tasks.filter((t) => !t.done).length} open {tasks.filter((t) => !t.done).length === 1 ? "task" : "tasks"}</div>
+              <div className="sidebar-stat"><ListIcon size={15} /> {tasks.filter((t) => !isDoneToday(t, toKey(new Date()))).length} open {tasks.filter((t) => !isDoneToday(t, toKey(new Date()))).length === 1 ? "task" : "tasks"}</div>
             </div>
 
             <div className="sidebar-spacer" />
@@ -579,9 +535,12 @@ export default function App() {
             <div className="sidebar-foot">
               <div style={styles.userPill} title={authUser.email || "Signed in"}>
                 <span style={styles.userDot} />
-                {authUser.email || "Signed in"}
+                {authUser.displayName || authUser.email || "Signed in"}
               </div>
-              <button className="iconbtn" style={styles.signOutBtn} onClick={handleSignOut}>Sign out</button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="iconbtn" style={styles.gearBtn} onClick={() => setSettingsOpen(true)} aria-label="Settings"><SettingsIcon size={16} /></button>
+                <button className="iconbtn" style={{ ...styles.signOutBtn, flex: 1, width: "auto" }} onClick={handleSignOut}>Sign out</button>
+              </div>
             </div>
           </aside>
 
@@ -592,6 +551,8 @@ export default function App() {
                 <TasksScreen
                   tasks={tasks} onAdd={addTask} onComplete={completeTask}
                   onDelete={deleteTask} onReopen={reopenTask} bindingId={bindingId}
+                  onAddSubtask={addSubtask} onToggleSubtask={toggleSubtask} onDeleteSubtask={deleteSubtask}
+                  settings={settings}
                 />
               </div>
               <div className="pane pane-library">
@@ -605,9 +566,12 @@ export default function App() {
           <div style={styles.userBar}>
             <div style={styles.userPill} title={authUser.email || "Signed in"}>
               <span style={styles.userDot} />
-              {authUser.email || "Signed in"}
+              {authUser.displayName || authUser.email || "Signed in"}
             </div>
-            <button className="iconbtn" style={styles.signOutBtn} onClick={handleSignOut}>Sign out</button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="iconbtn" style={styles.gearBtn} onClick={() => setSettingsOpen(true)} aria-label="Settings"><SettingsIcon size={16} /></button>
+              <button className="iconbtn" style={styles.signOutBtn} onClick={handleSignOut}>Sign out</button>
+            </div>
           </div>
 
           {syncError && <div style={styles.syncBanner}>{syncError}</div>}
@@ -619,6 +583,8 @@ export default function App() {
               <TasksScreen
                 tasks={tasks} onAdd={addTask} onComplete={completeTask}
                 onDelete={deleteTask} onReopen={reopenTask} bindingId={bindingId}
+                onAddSubtask={addSubtask} onToggleSubtask={toggleSubtask} onDeleteSubtask={deleteSubtask}
+                settings={settings}
               />
             )}
           </div>
@@ -639,6 +605,10 @@ export default function App() {
       )}
 
       {celebration && <Celebration book={celebration} onClose={dismissCelebration} reduce={reduce} />}
+
+      {settingsOpen && (
+        <SettingsModal settings={settings} onSave={updateSettings} onClose={() => setSettingsOpen(false)} authUser={authUser} />
+      )}
     </div>
   );
 }
@@ -822,20 +792,22 @@ function Shelf({ items, onOpen, isTop, reduce }) {
 function Spine({ book, onOpen, fresh }) {
   const width = 52;
   const height = 156;
-  const cloth = CLOTHS[book.color % CLOTHS.length];
+  const cloth = clothOf(book);
   const isExam = book.type === "exam";
   const rarity = book.rarity || "common";
   const rr = RARITY_RANK[rarity] || 0;
-  const gilded = rr >= 3;                    // fine / first edition shimmer
-  const gem = rr >= 3 || isExam;
-  const bright = rr >= 2 || isExam;
+  /* an "Altered" book wears its tier's flourish a notch stronger — the modifier from the v2 generator */
+  const effectiveRr = Math.min(6, rr + (book.modifier === "altered" ? 1 : 0));
+  const gilded = effectiveRr >= 5;            // mythic / relic shimmer
+  const gem = effectiveRr >= 5 || isExam;
+  const bright = effectiveRr >= 3 || isExam;
   const bandColor = bright ? "rgba(239,214,143,0.98)"
-    : (rr >= 1 || book.type === "assignment") ? "rgba(214,180,92,0.85)"
+    : (effectiveRr >= 1 || book.type === "assignment") ? "rgba(214,180,92,0.85)"
     : "rgba(214,180,92,0.6)";
   const frame =
-    rr >= 4 ? ", inset 0 0 0 2px rgba(247,233,190,0.92), 0 0 16px rgba(239,214,143,0.4)"
-    : rr === 3 ? ", inset 0 0 0 1.6px rgba(239,214,143,0.75)"
-    : (rr === 2 || isExam) ? ", inset 0 0 0 1.4px rgba(214,180,92,0.5)"
+    effectiveRr >= 6 ? ", inset 0 0 0 2px rgba(247,233,190,0.92), 0 0 16px rgba(239,214,143,0.4)"
+    : effectiveRr === 5 ? ", inset 0 0 0 1.6px rgba(239,214,143,0.75)"
+    : (effectiveRr >= 3 || isExam) ? ", inset 0 0 0 1.4px rgba(214,180,92,0.5)"
     : "";
   return (
     <button
@@ -850,7 +822,7 @@ function Spine({ book, onOpen, fresh }) {
         transform: "none",
       }}
     >
-      {(rr === 1 || rr === 2) && <span style={styles.spineSheen} aria-hidden="true" />}
+      {(effectiveRr === 1 || effectiveRr === 2) && <span style={styles.spineSheen} aria-hidden="true" />}
       {gem && <span style={styles.spineGem} aria-hidden="true" />}
       <span style={styles.spineGlyph} aria-hidden="true">{book.spineGlyph || "✦"}</span>
       {book.spineMark && <span style={{ ...styles.spineMark, color: bandColor }}>{book.spineMark}</span>}
@@ -907,6 +879,11 @@ function Stars() {
  * ================================================================== */
 function BookModal({ books, index, onClose, onNav, onDeleteBook }) {
   const book = books[index];
+  const pages = book.pages && book.pages.length ? book.pages : [{ heading: null, poem: book.poem }];
+  const [pageIndex, setPageIndex] = useState(0);
+  useEffect(() => { setPageIndex(0); }, [book.id]);
+  const page = pages[Math.min(pageIndex, pages.length - 1)];
+
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === "Escape") onClose();
@@ -930,14 +907,29 @@ function BookModal({ books, index, onClose, onNav, onDeleteBook }) {
             {(() => { const r = rarityOf(book.rarity || "common"); return (
               <span style={{ ...styles.rarityChip, color: r.ink, borderColor: r.ink + "55", background: r.ink + "12" }}>{r.name}</span>
             ); })()}
+            {book.modifier === "altered" && <span style={styles.alteredChip}>Altered</span>}
+            {book.genre && <span style={styles.pageMaterial}>{book.genre}{book.subgenre ? " · " + book.subgenre : ""}</span>}
             {book.material && <span style={styles.pageMaterial}>bound in {book.material}</span>}
+            {book.collection && <span style={styles.pageMaterial}>{book.collection}{book.volume ? " · Vol. " + book.volume : ""}</span>}
             {book.seriesMark && <span style={styles.pageMaterial}>edition {book.seriesMark}</span>}
             {book.classification && <span style={styles.pageMaterial}>{book.classification}</span>}
             {book.edgeTint && <span style={styles.pageMaterial}>edges {book.edgeTint}</span>}
           </div>
           <h2 style={styles.pageTitle}>{book.title}</h2>
           <div style={styles.pageRule} />
-          <div style={styles.poem}>{book.poem}</div>
+          {page.heading && <div style={styles.pageHeading}>{page.heading}</div>}
+          <div style={styles.poem}>{page.poem}</div>
+
+          {pages.length > 1 && (
+            <div style={styles.pageTurnRow}>
+              <button className="iconbtn" style={{ ...styles.pageTurnBtn, opacity: pageIndex > 0 ? 1 : 0.3 }}
+                disabled={pageIndex === 0} onClick={() => setPageIndex((p) => p - 1)} aria-label="Previous page"><ChevronLeft size={15} /></button>
+              <span style={styles.pageTurnLabel}>Page {pageIndex + 1} of {pages.length}</span>
+              <button className="iconbtn" style={{ ...styles.pageTurnBtn, opacity: pageIndex < pages.length - 1 ? 1 : 0.3 }}
+                disabled={pageIndex === pages.length - 1} onClick={() => setPageIndex((p) => p + 1)} aria-label="Next page"><ChevronRight size={15} /></button>
+            </div>
+          )}
+
           <div style={styles.colophon}>№ {index + 1} of {books.length}</div>
 
           <div style={styles.pageActions}>
@@ -968,10 +960,172 @@ function BookModal({ books, index, onClose, onNav, onDeleteBook }) {
 }
 
 /* ================================================================== *
+ *  SETTINGS
+ * ================================================================== */
+function SettingsModal({ settings, onSave, onClose, authUser }) {
+  const [tab, setTab] = useState("agenda");
+
+  /* agenda */
+  const [examLeadDays, setExamLeadDays] = useState(String(settings.examLeadDays));
+  const [assignmentLeadDays, setAssignmentLeadDays] = useState(String(settings.assignmentLeadDays));
+  const [agendaMsg, setAgendaMsg] = useState("");
+  const saveAgenda = () => {
+    onSave({
+      examLeadDays: Math.max(0, Math.min(120, Math.round(Number(examLeadDays)) || 0)),
+      assignmentLeadDays: Math.max(0, Math.min(120, Math.round(Number(assignmentLeadDays)) || 0)),
+    });
+    setAgendaMsg("Saved.");
+  };
+
+  /* account: username */
+  const [username, setUsername] = useState(authUser?.displayName || "");
+  const [usernameBusy, setUsernameBusy] = useState(false);
+  const [usernameMsg, setUsernameMsg] = useState("");
+  const saveUsername = async () => {
+    if (!auth?.currentUser || !username.trim()) return;
+    setUsernameBusy(true); setUsernameMsg("");
+    try {
+      await updateProfile(auth.currentUser, { displayName: username.trim() });
+      setUsernameMsg("Saved.");
+    } catch (error) {
+      setUsernameMsg(friendlyAuthError(error));
+    } finally {
+      setUsernameBusy(false);
+    }
+  };
+
+  /* account: email (requires re-entering the current password) */
+  const [newEmail, setNewEmail] = useState(authUser?.email || "");
+  const [emailPassword, setEmailPassword] = useState("");
+  const [emailBusy, setEmailBusy] = useState(false);
+  const [emailMsg, setEmailMsg] = useState("");
+  const saveEmail = async () => {
+    if (!auth?.currentUser || !newEmail.trim() || !emailPassword) return;
+    setEmailBusy(true); setEmailMsg("");
+    try {
+      await reauthenticateWithCredential(auth.currentUser, EmailAuthProvider.credential(authUser.email, emailPassword));
+      await updateEmail(auth.currentUser, newEmail.trim());
+      setEmailMsg("Email updated.");
+      setEmailPassword("");
+    } catch (error) {
+      setEmailMsg(friendlyAuthError(error));
+    } finally {
+      setEmailBusy(false);
+    }
+  };
+
+  /* account: password (requires the current password too) */
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [passwordMsg, setPasswordMsg] = useState("");
+  const savePassword = async () => {
+    if (!auth?.currentUser || !currentPassword) return;
+    if (newPassword.length < 6) { setPasswordMsg("Use at least 6 characters."); return; }
+    setPasswordBusy(true); setPasswordMsg("");
+    try {
+      await reauthenticateWithCredential(auth.currentUser, EmailAuthProvider.credential(authUser.email, currentPassword));
+      await updatePassword(auth.currentUser, newPassword);
+      setPasswordMsg("Password updated.");
+      setCurrentPassword(""); setNewPassword("");
+    } catch (error) {
+      setPasswordMsg(friendlyAuthError(error));
+    } finally {
+      setPasswordBusy(false);
+    }
+  };
+
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div className="book-open" style={styles.settingsCard} onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Settings">
+        <button className="iconbtn" style={styles.pageClose} onClick={onClose} aria-label="Close settings"><X size={18} /></button>
+        <div style={styles.settingsInner}>
+          <div style={styles.pageEyebrow}>Settings</div>
+          <h2 style={styles.settingsTitle}>{tab === "agenda" ? "Daily agenda" : "Account"}</h2>
+
+          <div style={styles.authTabs} role="tablist" aria-label="Settings section">
+            <button type="button" onClick={() => setTab("agenda")} style={{ ...styles.authTab, ...(tab === "agenda" ? styles.authTabActive : {}) }}>Agenda</button>
+            <button type="button" onClick={() => setTab("account")} style={{ ...styles.authTab, ...(tab === "account" ? styles.authTabActive : {}) }}>Account</button>
+          </div>
+
+          {tab === "agenda" ? (
+            <div style={styles.authForm}>
+              <p style={styles.settingsHint}>Assignments and exams join your Today list this many days before they're due — and stay there if they go overdue.</p>
+              <label style={styles.settingsField}>
+                Exams — days before due
+                <input className="field" type="number" min="0" max="120" value={examLeadDays}
+                  onChange={(e) => { setExamLeadDays(e.target.value); setAgendaMsg(""); }} style={styles.settingsInput} aria-label="Exam lead time in days" />
+              </label>
+              <label style={styles.settingsField}>
+                Assignments — days before due
+                <input className="field" type="number" min="0" max="120" value={assignmentLeadDays}
+                  onChange={(e) => { setAssignmentLeadDays(e.target.value); setAgendaMsg(""); }} style={styles.settingsInput} aria-label="Assignment lead time in days" />
+              </label>
+              {agendaMsg && <div style={{ ...styles.settingsMsg, color: settingsMsgColor(agendaMsg) }}>{agendaMsg}</div>}
+              <button className="addbtn" style={{ ...styles.addBtn, ...styles.settingsSave }} onClick={saveAgenda}>Save</button>
+            </div>
+          ) : (
+            <div style={styles.authForm}>
+              <label style={styles.authLabel}>
+                Username
+                <div style={styles.settingsRow}>
+                  <input className="field" style={styles.authInput} value={username}
+                    onChange={(e) => { setUsername(e.target.value); setUsernameMsg(""); }}
+                    placeholder="How you'd like to be known" aria-label="Username" />
+                  <button className="iconbtn" style={styles.settingsRowBtn} disabled={usernameBusy} onClick={saveUsername}>{usernameBusy ? "…" : "Save"}</button>
+                </div>
+              </label>
+              {usernameMsg && <div style={{ ...styles.settingsMsg, color: settingsMsgColor(usernameMsg) }}>{usernameMsg}</div>}
+
+              <div style={styles.settingsDivider} />
+
+              <label style={styles.authLabel}>
+                Email
+                <input className="field" type="email" style={styles.authInput} value={newEmail}
+                  onChange={(e) => { setNewEmail(e.target.value); setEmailMsg(""); }} aria-label="New email" />
+              </label>
+              <label style={styles.authLabel}>
+                Current password, to confirm
+                <input className="field" type="password" style={styles.authInput} value={emailPassword}
+                  onChange={(e) => { setEmailPassword(e.target.value); setEmailMsg(""); }}
+                  autoComplete="current-password" aria-label="Current password to confirm email change" />
+              </label>
+              {emailMsg && <div style={{ ...styles.settingsMsg, color: settingsMsgColor(emailMsg) }}>{emailMsg}</div>}
+              <button className="addbtn" style={{ ...styles.addBtn, ...styles.settingsSave }} disabled={emailBusy} onClick={saveEmail}>
+                {emailBusy ? "Please wait…" : "Update email"}
+              </button>
+
+              <div style={styles.settingsDivider} />
+
+              <label style={styles.authLabel}>
+                Current password
+                <input className="field" type="password" style={styles.authInput} value={currentPassword}
+                  onChange={(e) => { setCurrentPassword(e.target.value); setPasswordMsg(""); }}
+                  autoComplete="current-password" aria-label="Current password" />
+              </label>
+              <label style={styles.authLabel}>
+                New password
+                <input className="field" type="password" style={styles.authInput} value={newPassword}
+                  onChange={(e) => { setNewPassword(e.target.value); setPasswordMsg(""); }}
+                  autoComplete="new-password" aria-label="New password" />
+              </label>
+              {passwordMsg && <div style={{ ...styles.settingsMsg, color: settingsMsgColor(passwordMsg) }}>{passwordMsg}</div>}
+              <button className="addbtn" style={{ ...styles.addBtn, ...styles.settingsSave }} disabled={passwordBusy} onClick={savePassword}>
+                {passwordBusy ? "Please wait…" : "Update password"}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================== *
  *  CELEBRATION
  * ================================================================== */
 function Celebration({ book, onClose, reduce }) {
-  const cloth = CLOTHS[book.color % CLOTHS.length];
+  const cloth = clothOf(book);
   const firstLine = (book.poem.split("\n").find((l) => l.trim()) || "").trim();
   useEffect(() => {
     const t = setTimeout(onClose, reduce ? 1600 : 4200);
@@ -994,7 +1148,9 @@ function Celebration({ book, onClose, reduce }) {
           </div>
         )}
         {firstLine && <p style={styles.celebLine}>“{firstLine}”</p>}
-        <div style={styles.celebCaption}>Bound to your library</div>
+        <div style={styles.celebCaption}>
+          Bound to your library{book.pages && book.pages.length > 1 ? ` · ${book.pages.length} pages` : ""}
+        </div>
         <div style={styles.celebHint}>tap to view your shelves</div>
       </div>
     </div>
@@ -1004,7 +1160,7 @@ function Celebration({ book, onClose, reduce }) {
 /* ================================================================== *
  *  TASKS + CALENDAR
  * ================================================================== */
-function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId }) {
+function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId, onAddSubtask, onToggleSubtask, onDeleteSubtask, settings = DEFAULT_SETTINGS }) {
   const [view, setView] = useState("list");
   const [text, setText] = useState("");
   const [due, setDue] = useState("");
@@ -1015,10 +1171,13 @@ function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId }
 
   const submit = () => { if (text.trim()) { onAdd(text, due || null, type); setText(""); setDue(""); } };
 
-  const active = tasks.filter((t) => !t.done);
-  const done = tasks.filter((t) => t.done);
+  const active = tasks.filter((t) => !isDoneToday(t, today));
+  const done = tasks.filter((t) => isDoneToday(t, today));
   const rank = (t) => typeOf(t.type).rank;
   active.sort((a, b) => {
+    const aDaily = isDaily(a), bDaily = isDaily(b);
+    if (aDaily !== bDaily) return aDaily ? -1 : 1;
+    if (aDaily && bDaily) return b.createdAt - a.createdAt;
     if (a.due && b.due && a.due !== b.due) return a.due.localeCompare(b.due);
     if (a.due && !b.due) return -1;
     if (!a.due && b.due) return 1;
@@ -1027,7 +1186,13 @@ function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId }
   });
 
   const nextUp = active.find((t) => t.due);
-  const shownActive = active.filter((t) => filter === "all" || t.type === filter);
+
+  /* Today's agenda: recurring dailies, plus assignments/exams once they enter their configured lead window */
+  const todayItems = active.filter((t) => isDaily(t) || inLeadWindow(t, settings, today));
+  const todayIds = new Set(todayItems.map((t) => t.id));
+  const restActive = active.filter((t) => !todayIds.has(t.id));
+
+  const shownActive = restActive.filter((t) => filter === "all" || t.type === filter);
   const shownDone = done.filter((t) => filter === "all" || t.type === filter);
   const isEmpty = active.length === 0 && done.length === 0;
 
@@ -1077,19 +1242,26 @@ function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId }
           />
           <button className="addbtn" style={styles.addBtn} onClick={submit} aria-label="Add"><Plus size={20} /></button>
         </div>
-        <div style={styles.dueRow}>
-          <span style={styles.dueLabel}>Due</span>
-          <button onClick={() => setDue(due === today ? "" : today)}
-            style={{ ...styles.dueQuick, ...(due === today ? styles.dueQuickOn : {}) }}>Today</button>
-          <button onClick={() => setDue(due === tomorrow ? "" : tomorrow)}
-            style={{ ...styles.dueQuick, ...(due === tomorrow ? styles.dueQuickOn : {}) }}>Tomorrow</button>
-          <label style={styles.datePick}>
-            <CalIcon size={14} color="#8A6A3A" />
-            <input className="field-inline" type="date" value={due}
-              onChange={(e) => setDue(e.target.value)} aria-label="Pick due date" style={styles.datePickInput} />
-          </label>
-          {due && <button onClick={() => setDue("")} style={styles.dueClear} aria-label="Clear due date"><X size={13} /> {prettyDate(due)}</button>}
-        </div>
+        {type === "daily" ? (
+          <div style={styles.dueRow}>
+            <span style={styles.dueLabel}>Repeats</span>
+            <span style={{ ...styles.dueQuick, ...styles.dueQuickOn, cursor: "default" }}>Every day</span>
+          </div>
+        ) : (
+          <div style={styles.dueRow}>
+            <span style={styles.dueLabel}>Due</span>
+            <button onClick={() => setDue(due === today ? "" : today)}
+              style={{ ...styles.dueQuick, ...(due === today ? styles.dueQuickOn : {}) }}>Today</button>
+            <button onClick={() => setDue(due === tomorrow ? "" : tomorrow)}
+              style={{ ...styles.dueQuick, ...(due === tomorrow ? styles.dueQuickOn : {}) }}>Tomorrow</button>
+            <label style={styles.datePick}>
+              <CalIcon size={14} color="#8A6A3A" />
+              <input className="field-inline" type="date" value={due}
+                onChange={(e) => setDue(e.target.value)} aria-label="Pick due date" style={styles.datePickInput} />
+            </label>
+            {due && <button onClick={() => setDue("")} style={styles.dueClear} aria-label="Clear due date"><X size={13} /> {prettyDate(due)}</button>}
+          </div>
+        )}
       </div>
 
       <div style={styles.tasksBody}>
@@ -1099,12 +1271,23 @@ function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId }
           <div style={styles.emptyTasks}>
             <Logo size={56} />
             <p style={{ margin: "16px 0 4px", fontFamily: "Fraunces, serif", fontSize: 19 }}>Your desk is clear.</p>
-            <p style={styles.muted}>Add an assignment, task, or exam above. Finish it, and a poem is bound into your library.</p>
+            <p style={styles.muted}>Add a task, daily habit, assignment, or exam above. Finish it, and a poem is bound into your library.</p>
           </div>
         ) : (
           <>
             {nextUp && filter === "all" && (
               <NextUp task={nextUp} today={today} binding={bindingId === nextUp.id} onComplete={() => onComplete(nextUp)} />
+            )}
+
+            {todayItems.length > 0 && filter === "all" && (
+              <>
+                <div style={styles.sectionLabel}><Clock size={11} style={{ marginRight: 5, verticalAlign: -1 }} />Today · {todayItems.length}</div>
+                {todayItems.map((t) => (
+                  <TaskRow key={t.id} task={t} today={today} binding={bindingId === t.id}
+                    onComplete={() => onComplete(t)} onDelete={() => onDelete(t.id)} onReopen={() => onReopen(t.id)}
+                    onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} />
+                ))}
+              </>
             )}
 
             <div style={styles.filterRow}>
@@ -1127,13 +1310,15 @@ function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId }
               <>
                 {shownActive.map((t) => (
                   <TaskRow key={t.id} task={t} today={today} binding={bindingId === t.id}
-                    onComplete={() => onComplete(t)} onDelete={() => onDelete(t.id)} />
+                    onComplete={() => onComplete(t)} onDelete={() => onDelete(t.id)}
+                    onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} />
                 ))}
                 {shownDone.length > 0 && (
                   <>
                     <div style={styles.sectionLabel}>Bound · {shownDone.length}</div>
                     {shownDone.map((t) => (
-                      <TaskRow key={t.id} task={t} today={today} onReopen={() => onReopen(t.id)} onDelete={() => onDelete(t.id)} />
+                      <TaskRow key={t.id} task={t} today={today} onReopen={() => onReopen(t.id)} onDelete={() => onDelete(t.id)}
+                        onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} />
                     ))}
                   </>
                 )}
@@ -1176,9 +1361,11 @@ function NextUp({ task, today, binding, onComplete }) {
   );
 }
 
-function dueMeta(due, done, today) {
+function dueMeta(task, doneNow, today) {
+  if (isDaily(task)) return doneNow ? { label: "Done for today", tone: "muted" } : { label: "Every day", tone: "soon" };
+  const due = task.due;
   if (!due) return { label: "No date", tone: "muted" };
-  if (done) return { label: prettyDate(due), tone: "muted" };
+  if (doneNow) return { label: prettyDate(due), tone: "muted" };
   if (due < today) return { label: "Overdue", tone: "over" };
   if (due === today) return { label: "Due today", tone: "soon" };
   const diff = (parseKey(due) - parseKey(today)) / 86400000;
@@ -1186,31 +1373,118 @@ function dueMeta(due, done, today) {
   return { label: prettyDate(due), tone: "later" };
 }
 
-function TaskRow({ task, today, binding, onComplete, onDelete, onReopen }) {
-  const meta = dueMeta(task.due, task.done, today);
+function TaskRow({ task, today, binding, onComplete, onDelete, onReopen, onAddSubtask, onToggleSubtask, onDeleteSubtask }) {
+  const doneNow = isDoneToday(task, today);
+  const meta = dueMeta(task, doneNow, today);
   const ty = typeOf(task.type);
   const toneColor = { over: "#E0736B", soon: "var(--gold-bright)", later: "rgba(236,227,208,0.55)", muted: "rgba(236,227,208,0.4)" }[meta.tone];
-  return (
-    <div style={{ ...styles.taskRow, borderLeft: `3px solid ${task.done ? "rgba(236,227,208,0.15)" : ty.color}`, opacity: task.done ? 0.6 : 1 }}>
-      <button
-        className="check" onClick={task.done ? onReopen : onComplete} disabled={binding}
-        aria-label={task.done ? "Reopen task" : "Complete task"}
-        style={{ ...styles.check, ...(task.done ? styles.checkDone : {}), ...(binding ? styles.checkBinding : {}) }}
-      >
-        {binding ? <span className="spin" style={styles.spinner} /> : task.done ? <Check size={16} /> : null}
-      </button>
+  const subtasks = effectiveSubtasks(task, today);
+  const progress = countSubtasks(subtasks);
+  const [subOpen, setSubOpen] = useState(false);
+  const [addingRoot, setAddingRoot] = useState(false);
+  const [rootText, setRootText] = useState("");
+  const submitRoot = () => { if (rootText.trim()) { onAddSubtask(task.id, task.id, rootText); setRootText(""); setAddingRoot(false); } };
 
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{ ...styles.taskText, textDecoration: task.done ? "line-through" : "none" }}>{task.text}</div>
-        <div style={styles.taskMetaRow}>
-          <span style={{ ...styles.typeChip, color: ty.color, background: ty.chipBg }}>{ty.label}</span>
-          <span style={{ ...styles.taskDue, color: toneColor }}>
-            {binding ? "Binding its poem…" : meta.label}
-          </span>
+  return (
+    <div style={{ ...styles.taskCard, borderLeft: `3px solid ${doneNow ? "rgba(236,227,208,0.15)" : ty.color}`, opacity: doneNow ? 0.6 : 1 }}>
+      <div style={styles.taskRow}>
+        <button
+          className="check" onClick={doneNow ? onReopen : onComplete} disabled={binding}
+          aria-label={doneNow ? "Reopen task" : "Complete task"}
+          style={{ ...styles.check, ...(doneNow ? styles.checkDone : {}), ...(binding ? styles.checkBinding : {}) }}
+        >
+          {binding ? <span className="spin" style={styles.spinner} /> : doneNow ? <Check size={16} /> : null}
+        </button>
+
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ ...styles.taskText, textDecoration: doneNow ? "line-through" : "none" }}>{task.text}</div>
+          <div style={styles.taskMetaRow}>
+            <span style={{ ...styles.typeChip, color: ty.color, background: ty.chipBg }}>{ty.label}</span>
+            <span style={{ ...styles.taskDue, color: toneColor }}>
+              {binding ? "Binding its poem…" : meta.label}
+            </span>
+            {progress.total > 0 && (
+              <button onClick={() => setSubOpen((o) => !o)} style={styles.subtaskToggle}>
+                {progress.done}/{progress.total}
+                <ChevronRight size={11} style={{ transform: subOpen ? "rotate(90deg)" : "none", transition: "transform .15s" }} />
+              </button>
+            )}
+          </div>
         </div>
+
+        <button className="iconbtn" style={styles.taskDelete} onClick={onDelete} aria-label="Delete task"><Trash2 size={15} /></button>
       </div>
 
-      <button className="iconbtn" style={styles.taskDelete} onClick={onDelete} aria-label="Delete task"><Trash2 size={15} /></button>
+      {subOpen && (
+        <div style={styles.subtaskPanel}>
+          <SubtaskTree nodes={subtasks} depth={0} onToggle={(id) => onToggleSubtask(task.id, id)}
+            onDelete={(id) => onDeleteSubtask(task.id, id)} onAddChild={(parentId, text) => onAddSubtask(task.id, parentId, text)} />
+
+          {addingRoot ? (
+            <div style={styles.subtaskAddRow}>
+              <input className="field-inline" style={styles.subtaskInput} value={rootText} autoFocus
+                onChange={(e) => setRootText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitRoot()}
+                placeholder="Add subtask…" aria-label="New subtask" />
+              <button className="iconbtn" style={styles.subtaskAddConfirm} onClick={submitRoot} aria-label="Confirm add subtask"><Plus size={13} /></button>
+            </div>
+          ) : (
+            <button onClick={() => setAddingRoot(true)} style={{ ...styles.subtaskToggle, ...styles.subtaskRootAdd }}>
+              <Plus size={11} /> Subtask
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SubtaskTree({ nodes, depth, onToggle, onDelete, onAddChild }) {
+  if (!nodes || nodes.length === 0) return null;
+  return (
+    <div style={{ ...styles.subtaskList, paddingLeft: depth * 18 }}>
+      {nodes.map((n) => (
+        <SubtaskNode key={n.id} node={n} depth={depth} onToggle={onToggle} onDelete={onDelete} onAddChild={onAddChild} />
+      ))}
+    </div>
+  );
+}
+
+function SubtaskNode({ node, depth, onToggle, onDelete, onAddChild }) {
+  const [open, setOpen] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [text, setText] = useState("");
+  const hasChildren = node.subtasks && node.subtasks.length > 0;
+  const submit = () => { if (text.trim()) { onAddChild(node.id, text); setText(""); setAdding(false); } };
+
+  return (
+    <div style={styles.subtaskNode}>
+      <div style={styles.subtaskRow}>
+        {hasChildren ? (
+          <button className="iconbtn" onClick={() => setOpen((o) => !o)} style={styles.subtaskCaret} aria-label={open ? "Collapse" : "Expand"}>
+            <ChevronRight size={12} style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform .15s" }} />
+          </button>
+        ) : <span style={styles.subtaskCaretSpacer} />}
+        <button className="check" onClick={() => onToggle(node.id)} aria-label={node.done ? "Mark not done" : "Mark done"}
+          style={{ ...styles.subCheck, ...(node.done ? styles.checkDone : {}) }}>
+          {node.done ? <Check size={11} /> : null}
+        </button>
+        <span style={{ ...styles.subtaskText, textDecoration: node.done ? "line-through" : "none", opacity: node.done ? 0.55 : 1 }}>{node.text}</span>
+        <button className="iconbtn" onClick={() => setAdding((a) => !a)} style={styles.subtaskAddBtn} aria-label="Add nested subtask"><Plus size={12} /></button>
+        <button className="iconbtn" onClick={() => onDelete(node.id)} style={styles.subtaskDeleteBtn} aria-label="Delete subtask"><Trash2 size={12} /></button>
+      </div>
+
+      {adding && (
+        <div style={{ ...styles.subtaskAddRow, paddingLeft: 22 }}>
+          <input className="field-inline" style={styles.subtaskInput} value={text} autoFocus
+            onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()}
+            placeholder="Add subtask…" aria-label="New nested subtask" />
+          <button className="iconbtn" style={styles.subtaskAddConfirm} onClick={submit} aria-label="Confirm add subtask"><Plus size={13} /></button>
+        </div>
+      )}
+
+      {open && hasChildren && (
+        <SubtaskTree nodes={node.subtasks} depth={depth + 1} onToggle={onToggle} onDelete={onDelete} onAddChild={onAddChild} />
+      )}
     </div>
   );
 }
@@ -1427,12 +1701,39 @@ const styles = {
     display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2,
   },
   pageEyebrow: { fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", color: "#8A6A3A", fontWeight: 600, lineHeight: 1.5 },
-  pageRarity: { display: "flex", alignItems: "center", gap: 9, marginTop: 9 },
+
+  /* settings modal */
+  settingsCard: {
+    position: "relative", width: "100%", maxWidth: 360, maxHeight: "86vh",
+    background: "linear-gradient(135deg,#F1E8D5,#E3D6BA)", borderRadius: 16,
+    boxShadow: "0 30px 70px rgba(0,0,0,0.6), inset 0 0 0 1px rgba(120,90,50,0.25)",
+    display: "flex", flexDirection: "column", overflow: "hidden",
+  },
+  settingsInner: { padding: "34px 28px 28px", overflowY: "auto", flex: 1 },
+  settingsTitle: { fontFamily: "Fraunces, serif", fontSize: 24, margin: "6px 0 0", color: "#2A1C10", fontWeight: 600 },
+  settingsHint: { fontSize: 13, lineHeight: 1.5, color: "#6E5A3E", margin: 0 },
+  settingsField: { display: "flex", flexDirection: "column", gap: 6, fontSize: 12.5, fontWeight: 600, color: "#4A3A24", fontFamily: "Inter, sans-serif" },
+  settingsInput: { width: 100 },
+  settingsSave: { width: "100%", justifyContent: "center" },
+  settingsRow: { display: "flex", gap: 8 },
+  settingsRowBtn: {
+    flexShrink: 0, border: "1px solid rgba(120,90,50,0.25)", background: "rgba(214,180,92,0.18)", color: "#7E5A11",
+    borderRadius: 10, padding: "0 16px", fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+  },
+  settingsMsg: { fontSize: 12, fontWeight: 600, marginTop: -4 },
+  settingsDivider: { height: 1, background: "rgba(120,90,50,0.16)", margin: "6px 0" },
+  gearBtn: { border: "1px solid rgba(236,227,208,0.12)", background: "rgba(236,227,208,0.04)", color: "rgba(236,227,208,0.72)", borderRadius: 999, width: 34, height: 34, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 },
+  pageRarity: { display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: 4, gap: 9, marginTop: 9 },
+  alteredChip: { fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", padding: "2px 7px", borderRadius: 6, border: "1px solid rgba(120,90,50,0.4)", color: "#7E5A11", background: "rgba(214,180,92,0.14)", fontFamily: "Inter, sans-serif" },
   rarityChip: { fontSize: 10.5, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", padding: "2px 8px", borderRadius: 6, border: "1px solid", fontFamily: "Inter, sans-serif" },
   pageMaterial: { fontSize: 12.5, fontStyle: "italic", color: "#8A7350", fontFamily: "Fraunces, serif" },
   pageTitle: { fontFamily: "Fraunces, serif", fontSize: 28, lineHeight: 1.15, margin: "8px 0 0", color: "#2A1C10", fontWeight: 600 },
   pageRule: { width: 44, height: 2, background: "#B98F47", margin: "16px 0 18px" },
   poem: { fontFamily: "Fraunces, serif", fontSize: 17.5, lineHeight: 1.72, whiteSpace: "pre-wrap", color: "#33261A" },
+  pageHeading: { fontFamily: "Fraunces, serif", fontStyle: "italic", fontSize: 13.5, letterSpacing: "0.04em", color: "#9A7B4C", marginBottom: 10 },
+  pageTurnRow: { marginTop: 20, display: "flex", alignItems: "center", gap: 10, paddingTop: 14, borderTop: "1px solid rgba(120,90,50,0.16)" },
+  pageTurnBtn: { width: 28, height: 28, borderRadius: "50%", border: "none", background: "rgba(60,40,20,0.08)", color: "#3A2817", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+  pageTurnLabel: { fontSize: 12, fontWeight: 600, color: "#8A7350", fontFamily: "Inter, sans-serif" },
   colophon: { marginTop: 22, fontSize: 11, letterSpacing: "0.14em", textTransform: "uppercase", color: "#9A7B4C" },
   pageActions: { marginTop: 18, display: "flex", justifyContent: "flex-start" },
   deleteBookBtn: {
@@ -1545,7 +1846,8 @@ const styles = {
 
   tasksBody: { flex: 1, overflowY: "auto", padding: "0 14px 20px" },
 
-  taskRow: { display: "flex", alignItems: "center", gap: 12, padding: "13px 12px", borderRadius: 12, background: "rgba(236,227,208,0.035)", marginBottom: 7, border: "1px solid rgba(236,227,208,0.06)" },
+  taskCard: { borderRadius: 12, background: "rgba(236,227,208,0.035)", marginBottom: 7, border: "1px solid rgba(236,227,208,0.06)", overflow: "hidden" },
+  taskRow: { display: "flex", alignItems: "center", gap: 12, padding: "13px 12px" },
   check: { width: 26, height: 26, flexShrink: 0, borderRadius: 8, border: "1.5px solid rgba(214,180,92,0.5)", background: "transparent", color: "#1a130a", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all .18s" },
   checkDone: { background: "var(--gold)", borderColor: "var(--gold)" },
   checkBinding: { borderColor: "var(--gold)", cursor: "wait" },
@@ -1553,6 +1855,23 @@ const styles = {
   taskText: { fontSize: 15.5, color: "var(--paper)", lineHeight: 1.35, wordBreak: "break-word" },
   taskDue: { fontSize: 12, marginTop: 3, fontWeight: 600, letterSpacing: "0.02em" },
   taskDelete: { width: 32, height: 32, flexShrink: 0, borderRadius: 8, border: "none", background: "transparent", color: "rgba(236,227,208,0.35)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+
+  /* subtasks */
+  subtaskToggle: { display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11.5, fontWeight: 700, color: "rgba(236,227,208,0.55)", background: "rgba(236,227,208,0.07)", border: "none", borderRadius: 999, padding: "2px 7px", cursor: "pointer", fontFamily: "Inter, sans-serif" },
+  subtaskPanel: { padding: "0 12px 12px 50px", display: "flex", flexDirection: "column", gap: 2 },
+  subtaskList: { display: "flex", flexDirection: "column", gap: 2 },
+  subtaskNode: { display: "flex", flexDirection: "column" },
+  subtaskRow: { display: "flex", alignItems: "center", gap: 6, padding: "4px 0" },
+  subtaskCaret: { width: 16, height: 16, flexShrink: 0, border: "none", background: "transparent", color: "rgba(236,227,208,0.4)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+  subtaskCaretSpacer: { width: 16, flexShrink: 0 },
+  subCheck: { width: 18, height: 18, flexShrink: 0, borderRadius: 5, border: "1.5px solid rgba(214,180,92,0.45)", background: "transparent", color: "#1a130a", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+  subtaskText: { flex: 1, minWidth: 0, fontSize: 13, color: "rgba(236,227,208,0.85)", wordBreak: "break-word" },
+  subtaskAddBtn: { width: 20, height: 20, flexShrink: 0, border: "none", background: "transparent", color: "rgba(236,227,208,0.3)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+  subtaskDeleteBtn: { width: 20, height: 20, flexShrink: 0, border: "none", background: "transparent", color: "rgba(236,227,208,0.25)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+  subtaskAddRow: { display: "flex", alignItems: "center", gap: 6, padding: "2px 0 6px 22px" },
+  subtaskInput: { flex: 1, minWidth: 0, background: "rgba(236,227,208,0.07)", border: "1px solid rgba(236,227,208,0.16)", borderRadius: 7, padding: "5px 8px", fontSize: 12.5, color: "var(--paper)", fontFamily: "Inter, sans-serif", outline: "none" },
+  subtaskAddConfirm: { width: 22, height: 22, flexShrink: 0, border: "none", borderRadius: 6, background: "var(--gold)", color: "#1a130a", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+  subtaskRootAdd: { display: "flex", alignItems: "center", gap: 6, marginTop: 2 },
 
   sectionLabel: { fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase", color: "rgba(214,180,92,0.65)", fontWeight: 600, padding: "16px 6px 8px" },
   emptyTasks: { textAlign: "center", padding: "48px 30px" },
