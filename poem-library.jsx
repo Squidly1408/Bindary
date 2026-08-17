@@ -136,6 +136,19 @@ function usePrefersReducedMotion() {
   return reduce;
 }
 
+/* screens at or above this width get the desktop dashboard instead of the phone shell */
+const DESKTOP_BREAKPOINT = "(min-width: 960px)";
+function useMediaQuery(query) {
+  const [matches, setMatches] = useState(() => (typeof window !== "undefined" ? window.matchMedia(query).matches : false));
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const on = () => setMatches(mq.matches);
+    on(); mq.addEventListener?.("change", on);
+    return () => mq.removeEventListener?.("change", on);
+  }, [query]);
+  return matches;
+}
+
 /* ---------- firebase helpers ---------- */
 function userCollectionPath(userId, name) {
   return collection(db, "users", userId, name);
@@ -338,6 +351,7 @@ export default function App() {
   const [bindingId, setBindingId] = useState(null);
   const libScrollRef = useRef(null);
   const reduce = usePrefersReducedMotion();
+  const isDesktop = useMediaQuery(DESKTOP_BREAKPOINT);
   const firebaseStatus = useMemo(() => getFirebaseConfigStatus(), []);
   const appReady = !authChecking && (!authUser || (booksReady && tasksReady));
 
@@ -515,60 +529,106 @@ export default function App() {
     setTimeout(() => { if (libScrollRef.current) libScrollRef.current.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" }); }, 60);
   }, [reduce]);
 
+  const signedIn = !authChecking && authUser && appReady;
+
   return (
     <div className="app-root" style={styles.root}>
       <style>{CSS}</style>
 
-      <div className="app-phone">
-        {!firebaseReady ? (
-          <FirebaseSetupScreen missing={firebaseStatus.missing} />
-        ) : authChecking ? (
-          <Splash />
-        ) : !authUser ? (
-          <AuthScreen
-            mode={authMode}
-            email={email}
-            password={password}
-            busy={authBusy}
-            error={authError}
-            onModeChange={setAuthMode}
-            onEmailChange={setEmail}
-            onPasswordChange={setPassword}
-            onSubmit={handleSignIn}
-            onResetPassword={handlePasswordReset}
-          />
-        ) : !appReady ? (
-          <Splash />
-        ) : (
-          <>
-            <div style={styles.userBar}>
+      {!signedIn ? (
+        <div className="app-phone">
+          {!firebaseReady ? (
+            <FirebaseSetupScreen missing={firebaseStatus.missing} />
+          ) : authChecking ? (
+            <Splash />
+          ) : !authUser ? (
+            <AuthScreen
+              mode={authMode}
+              email={email}
+              password={password}
+              busy={authBusy}
+              error={authError}
+              onModeChange={setAuthMode}
+              onEmailChange={setEmail}
+              onPasswordChange={setPassword}
+              onSubmit={handleSignIn}
+              onResetPassword={handlePasswordReset}
+            />
+          ) : (
+            <Splash />
+          )}
+        </div>
+      ) : isDesktop ? (
+        <div className="app-desktop">
+          <aside className="app-sidebar">
+            <div className="sidebar-brand">
+              <Logo size={36} />
+              <div>
+                <div className="sidebar-wordmark">Bindary</div>
+                <div className="sidebar-tagline">Finish something. Bind its poem.</div>
+              </div>
+            </div>
+
+            <div className="sidebar-stats">
+              <div className="sidebar-stat"><BookOpen size={15} /> {books.length} {books.length === 1 ? "book" : "books"}</div>
+              <div className="sidebar-stat"><ListIcon size={15} /> {tasks.filter((t) => !t.done).length} open {tasks.filter((t) => !t.done).length === 1 ? "task" : "tasks"}</div>
+            </div>
+
+            <div className="sidebar-spacer" />
+
+            <div className="sidebar-foot">
               <div style={styles.userPill} title={authUser.email || "Signed in"}>
                 <span style={styles.userDot} />
                 {authUser.email || "Signed in"}
               </div>
               <button className="iconbtn" style={styles.signOutBtn} onClick={handleSignOut}>Sign out</button>
             </div>
+          </aside>
 
-            {syncError && <div style={styles.syncBanner}>{syncError}</div>}
-
-            <div key={tab} className="screen-fade" style={styles.screen}>
-              {tab === "library" ? (
-                <LibraryScreen books={books} scrollRef={libScrollRef} onOpen={(i) => setOpenIndex(i)} reduce={reduce} />
-              ) : (
+          <main className="app-main">
+            {syncError && <div className="desktop-sync-banner" style={styles.syncBanner}>{syncError}</div>}
+            <div className="app-panes">
+              <div className="pane pane-tasks">
                 <TasksScreen
                   tasks={tasks} onAdd={addTask} onComplete={completeTask}
                   onDelete={deleteTask} onReopen={reopenTask} bindingId={bindingId}
                 />
-              )}
+              </div>
+              <div className="pane pane-library">
+                <LibraryScreen books={books} scrollRef={libScrollRef} onOpen={(i) => setOpenIndex(i)} reduce={reduce} />
+              </div>
             </div>
+          </main>
+        </div>
+      ) : (
+        <div className="app-phone">
+          <div style={styles.userBar}>
+            <div style={styles.userPill} title={authUser.email || "Signed in"}>
+              <span style={styles.userDot} />
+              {authUser.email || "Signed in"}
+            </div>
+            <button className="iconbtn" style={styles.signOutBtn} onClick={handleSignOut}>Sign out</button>
+          </div>
 
-            <nav style={styles.nav} aria-label="Screens">
-              <TabButton active={tab === "library"} onClick={() => setTab("library")} icon={<BookOpen size={20} />} label="Library" badge={books.length} />
-              <TabButton active={tab === "tasks"} onClick={() => setTab("tasks")} icon={<ListIcon size={20} />} label="Tasks" />
-            </nav>
-          </>
-        )}
-      </div>
+          {syncError && <div style={styles.syncBanner}>{syncError}</div>}
+
+          <div key={tab} className="screen-fade" style={styles.screen}>
+            {tab === "library" ? (
+              <LibraryScreen books={books} scrollRef={libScrollRef} onOpen={(i) => setOpenIndex(i)} reduce={reduce} />
+            ) : (
+              <TasksScreen
+                tasks={tasks} onAdd={addTask} onComplete={completeTask}
+                onDelete={deleteTask} onReopen={reopenTask} bindingId={bindingId}
+              />
+            )}
+          </div>
+
+          <nav style={styles.nav} aria-label="Screens">
+            <TabButton active={tab === "library"} onClick={() => setTab("library")} icon={<BookOpen size={20} />} label="Library" badge={books.length} />
+            <TabButton active={tab === "tasks"} onClick={() => setTab("tasks")} icon={<ListIcon size={20} />} label="Tasks" />
+          </nav>
+        </div>
+      )}
 
       {openIndex != null && books[openIndex] && (
         <BookModal
@@ -697,7 +757,7 @@ function LibraryScreen({ books, scrollRef, onOpen, reduce }) {
       </header>
 
       <div ref={scrollRef} className="lib-scroll" style={styles.libScroll}>
-        <div style={styles.sky}>
+        <div className="sky" style={styles.sky}>
           <div style={styles.moon} aria-hidden="true" />
           <Stars />
           <div style={styles.skyBottom}>
@@ -711,7 +771,7 @@ function LibraryScreen({ books, scrollRef, onOpen, reduce }) {
           </div>
         </div>
 
-        <div style={styles.tower}>
+        <div className="tower" style={styles.tower}>
           {books.length === 0 ? (
             <EmptyShelf />
           ) : (
@@ -973,7 +1033,7 @@ function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId }
 
   return (
     <div style={styles.tasks}>
-      <header style={styles.masthead}>
+      <header className="masthead" style={styles.masthead}>
         <div style={styles.brandRow}>
           <Logo size={40} />
           <div>
@@ -1543,6 +1603,43 @@ html, body { margin: 0; height: 100%; }
 @media (min-width: 600px) {
   @supports (height: 100dvh) { .app-phone { height: min(calc(100dvh - 48px), 940px); } }
 }
+
+/* ---- desktop dashboard: sidebar + two panes shown side by side ---- */
+@media (min-width: 960px) {
+  .app-root { align-items: stretch; padding: 0; }
+  .app-desktop { width: 100%; max-width: 1560px; margin: 0 auto; display: flex; height: 100vh; }
+  @supports (height: 100dvh) { .app-desktop { height: 100dvh; } }
+
+  .app-sidebar {
+    width: 248px; flex-shrink: 0; display: flex; flex-direction: column; gap: 22px;
+    padding: 28px 22px; background: linear-gradient(180deg,#151A21 0%,#12161C 100%);
+    border-right: 1px solid rgba(214,180,92,0.14);
+  }
+  .sidebar-brand { display: flex; align-items: center; gap: 12px; }
+  .sidebar-wordmark { font-family: "Fraunces", serif; font-size: 20px; color: var(--paper); }
+  .sidebar-tagline { font-family: "Fraunces", serif; font-style: italic; font-size: 12px; color: rgba(236,227,208,0.55); margin-top: 2px; }
+  .sidebar-stats { display: flex; flex-direction: column; gap: 8px; }
+  .sidebar-stat {
+    display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 600;
+    color: rgba(236,227,208,0.68); font-family: Inter, sans-serif;
+  }
+  .sidebar-spacer { flex: 1; }
+  .sidebar-foot { display: flex; flex-direction: column; gap: 10px; }
+  .sidebar-foot .iconbtn { width: 100%; }
+
+  .app-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .desktop-sync-banner { margin: 16px 20px 0; }
+  .app-panes { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; }
+  .pane { min-width: 0; height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+  .pane-tasks { border-right: 1px solid rgba(214,180,92,0.12); }
+
+  /* branding already lives in the sidebar on desktop */
+  .pane-tasks .masthead { display: none; }
+
+  /* the bookcase reads as a fixed-width illustration; center it instead of stretching */
+  .pane-library .sky, .pane-library .tower { max-width: 560px; margin-left: auto; margin-right: auto; width: 100%; }
+}
+
 button:focus-visible, .field:focus-visible, .tabbtn:focus-visible {
   outline: 2px solid var(--gold-bright); outline-offset: 2px;
 }
