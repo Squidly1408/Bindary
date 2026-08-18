@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { BookOpen, Plus, X, ChevronLeft, ChevronRight, Trash2, Moon, Sparkles, Check, Calendar as CalIcon, List as ListIcon, Settings as SettingsIcon, Clock } from "lucide-react";
+import { BookOpen, Plus, X, ChevronLeft, ChevronRight, Trash2, Moon, Sparkles, Check, Calendar as CalIcon, List as ListIcon, Settings as SettingsIcon, Clock, ListChecks, Pencil } from "lucide-react";
 import {
   createUserWithEmailAndPassword, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signOut,
   updateProfile, updateEmail, updatePassword, reauthenticateWithCredential, EmailAuthProvider,
@@ -16,7 +16,32 @@ import {
  *  Two screens: the growing bookcase, and the tasks + deadline calendar.
  * ------------------------------------------------------------------ */
 
-const SHELF_CAPACITY = 5;
+const SHELF_CAPACITY = 5; // fallback used before the shelf's real width has been measured
+/* a spine (Spine's `width`) plus the shelfBooks row's `gap` — kept in one place so the
+   capacity math below and the actual rendered spines can never drift apart */
+const SPINE_WIDTH = 52;
+const SPINE_GAP = 8;
+/* how many spines fit across a shelf of this many pixels? shelfBooks reserves 20px of its
+   own horizontal padding (10px each side) beyond whatever the caller already measured */
+function shelfCapacityForWidth(width) {
+  if (!width) return SHELF_CAPACITY;
+  const usable = width - 20;
+  return Math.max(1, Math.floor((usable + SPINE_GAP) / (SPINE_WIDTH + SPINE_GAP)));
+}
+/* tracks an element's rendered content width so the shelf can pack in as many books as
+   actually fit, instead of stopping at a fixed count and leaving the rest of the row empty */
+function useElementWidth(ref) {
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setWidth(el.clientWidth));
+    setWidth(el.clientWidth);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return width;
+}
 
 /* ---------- legacy cloth palette — kept only so books bound before the v2 generator still render ---------- */
 const LEGACY_CLOTHS = [
@@ -364,6 +389,15 @@ export default function App() {
     setTasks((prev) => prev.filter((t) => t.id !== id));
   }, [authUser, tasksRef]);
 
+  const editTask = useCallback(async (id, patch) => {
+    if (!authUser || !tasksRef) return;
+    const current = tasks.find((t) => t.id === id);
+    if (!current) return;
+    const updated = { ...current, ...patch };
+    await setDoc(doc(tasksRef, id), updated);
+    setTasks((prev) => prev.map((t) => (t.id === id ? updated : t)));
+  }, [authUser, tasks, tasksRef]);
+
   /* subtasks are a pure checklist on the task doc — no poem, no auto-completing the parent */
   const updateSubtasks = useCallback(async (taskId, transform) => {
     if (!authUser || !tasksRef) return;
@@ -552,6 +586,7 @@ export default function App() {
                   tasks={tasks} onAdd={addTask} onComplete={completeTask}
                   onDelete={deleteTask} onReopen={reopenTask} bindingId={bindingId}
                   onAddSubtask={addSubtask} onToggleSubtask={toggleSubtask} onDeleteSubtask={deleteSubtask}
+                  onEditTask={editTask}
                   settings={settings}
                 />
               </div>
@@ -584,6 +619,7 @@ export default function App() {
                 tasks={tasks} onAdd={addTask} onComplete={completeTask}
                 onDelete={deleteTask} onReopen={reopenTask} bindingId={bindingId}
                 onAddSubtask={addSubtask} onToggleSubtask={toggleSubtask} onDeleteSubtask={deleteSubtask}
+                onEditTask={editTask}
                 settings={settings}
               />
             )}
@@ -690,10 +726,13 @@ function TabButton({ active, onClick, icon, label, badge }) {
  *  LIBRARY
  * ================================================================== */
 function LibraryScreen({ books, scrollRef, onOpen, reduce }) {
-  const shelfCount = Math.max(1, Math.ceil(books.length / SHELF_CAPACITY));
-  const onShelf = books.length % SHELF_CAPACITY;
-  const remaining = onShelf === 0 ? 0 : SHELF_CAPACITY - onShelf;
-  const progress = books.length === 0 ? 0 : (onShelf === 0 ? 1 : onShelf / SHELF_CAPACITY);
+  const towerRef = useRef(null);
+  const towerWidth = useElementWidth(towerRef);
+  const shelfCapacity = shelfCapacityForWidth(towerWidth);
+  const shelfCount = Math.max(1, Math.ceil(books.length / shelfCapacity));
+  const onShelf = books.length % shelfCapacity;
+  const remaining = onShelf === 0 ? 0 : shelfCapacity - onShelf;
+  const progress = books.length === 0 ? 0 : (onShelf === 0 ? 1 : onShelf / shelfCapacity);
   const caption =
     books.length === 0 ? "Every finished task raises the tower a little higher."
     : remaining === 0 ? "A shelf complete — the tower just grew."
@@ -741,12 +780,12 @@ function LibraryScreen({ books, scrollRef, onOpen, reduce }) {
           </div>
         </div>
 
-        <div className="tower" style={styles.tower}>
+        <div ref={towerRef} className="tower" style={styles.tower}>
           {books.length === 0 ? (
-            <EmptyShelf />
+            <EmptyShelf capacity={shelfCapacity} />
           ) : (
-            reversedIndexedShelves(books).map((shelf, i) => (
-              <Shelf key={i} items={shelf} onOpen={onOpen} isTop={i === 0} reduce={reduce} />
+            reversedIndexedShelves(books, shelfCapacity).map((shelf, i) => (
+              <Shelf key={i} items={shelf} onOpen={onOpen} isTop={i === 0} reduce={reduce} capacity={shelfCapacity} />
             ))
           )}
           <div style={styles.floor} aria-hidden="true" />
@@ -757,17 +796,17 @@ function LibraryScreen({ books, scrollRef, onOpen, reduce }) {
 }
 
 /* build [{book, globalIndex}] per shelf, newest shelf first */
-function reversedIndexedShelves(books) {
+function reversedIndexedShelves(books, capacity = SHELF_CAPACITY) {
   const chunks = [];
-  for (let i = 0; i < books.length; i += SHELF_CAPACITY) {
-    chunks.push(books.slice(i, i + SHELF_CAPACITY).map((b, j) => ({ book: b, index: i + j })));
+  for (let i = 0; i < books.length; i += capacity) {
+    chunks.push(books.slice(i, i + capacity).map((b, j) => ({ book: b, index: i + j })));
   }
-  if (chunks.length === 0 || chunks[chunks.length - 1].length === SHELF_CAPACITY) chunks.push([]);
+  if (chunks.length === 0 || chunks[chunks.length - 1].length === capacity) chunks.push([]);
   return chunks.reverse();
 }
 
-function Shelf({ items, onOpen, isTop, reduce }) {
-  const slots = SHELF_CAPACITY;
+function Shelf({ items, onOpen, isTop, reduce, capacity = SHELF_CAPACITY }) {
+  const slots = capacity;
   return (
     <div style={styles.shelfWrap}>
       <div style={styles.shelfBooks}>
@@ -837,11 +876,11 @@ function Spine({ book, onOpen, fresh }) {
   );
 }
 
-function EmptyShelf() {
+function EmptyShelf({ capacity = SHELF_CAPACITY }) {
   return (
     <div style={styles.shelfWrap}>
       <div style={{ ...styles.shelfBooks, alignItems: "flex-end" }}>
-        {Array.from({ length: SHELF_CAPACITY }).map((_, i) => <div key={i} style={styles.emptySlot} />)}
+        {Array.from({ length: capacity }).map((_, i) => <div key={i} style={styles.emptySlot} />)}
       </div>
       <div style={styles.plank} aria-hidden="true">
         <div style={styles.plankFace} />
@@ -1160,7 +1199,7 @@ function Celebration({ book, onClose, reduce }) {
 /* ================================================================== *
  *  TASKS + CALENDAR
  * ================================================================== */
-function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId, onAddSubtask, onToggleSubtask, onDeleteSubtask, settings = DEFAULT_SETTINGS }) {
+function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId, onAddSubtask, onToggleSubtask, onDeleteSubtask, onEditTask, settings = DEFAULT_SETTINGS }) {
   const [view, setView] = useState("list");
   const [text, setText] = useState("");
   const [due, setDue] = useState("");
@@ -1285,7 +1324,7 @@ function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId, 
                 {todayItems.map((t) => (
                   <TaskRow key={t.id} task={t} today={today} binding={bindingId === t.id}
                     onComplete={() => onComplete(t)} onDelete={() => onDelete(t.id)} onReopen={() => onReopen(t.id)}
-                    onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} />
+                    onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} onEditTask={onEditTask} />
                 ))}
               </>
             )}
@@ -1311,14 +1350,14 @@ function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId, 
                 {shownActive.map((t) => (
                   <TaskRow key={t.id} task={t} today={today} binding={bindingId === t.id}
                     onComplete={() => onComplete(t)} onDelete={() => onDelete(t.id)}
-                    onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} />
+                    onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} onEditTask={onEditTask} />
                 ))}
                 {shownDone.length > 0 && (
                   <>
                     <div style={styles.sectionLabel}>Bound · {shownDone.length}</div>
                     {shownDone.map((t) => (
                       <TaskRow key={t.id} task={t} today={today} onReopen={() => onReopen(t.id)} onDelete={() => onDelete(t.id)}
-                        onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} />
+                        onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} onEditTask={onEditTask} />
                     ))}
                   </>
                 )}
@@ -1373,7 +1412,7 @@ function dueMeta(task, doneNow, today) {
   return { label: prettyDate(due), tone: "later" };
 }
 
-function TaskRow({ task, today, binding, onComplete, onDelete, onReopen, onAddSubtask, onToggleSubtask, onDeleteSubtask }) {
+function TaskRow({ task, today, binding, onComplete, onDelete, onReopen, onAddSubtask, onToggleSubtask, onDeleteSubtask, onEditTask }) {
   const doneNow = isDoneToday(task, today);
   const meta = dueMeta(task, doneNow, today);
   const ty = typeOf(task.type);
@@ -1384,6 +1423,18 @@ function TaskRow({ task, today, binding, onComplete, onDelete, onReopen, onAddSu
   const [addingRoot, setAddingRoot] = useState(false);
   const [rootText, setRootText] = useState("");
   const submitRoot = () => { if (rootText.trim()) { onAddSubtask(task.id, task.id, rootText); setRootText(""); setAddingRoot(false); } };
+
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState(task.text);
+  const [editDue, setEditDue] = useState(task.due || "");
+  const tomorrow = toKey(new Date(Date.now() + 86400000));
+  const startEdit = () => { setEditText(task.text); setEditDue(task.due || ""); setEditing(true); };
+  const cancelEdit = () => setEditing(false);
+  const saveEdit = () => {
+    if (!editText.trim()) return;
+    onEditTask(task.id, { text: editText.trim(), ...(isDaily(task) ? {} : { due: editDue || null }) });
+    setEditing(false);
+  };
 
   return (
     <div style={{ ...styles.taskCard, borderLeft: `3px solid ${doneNow ? "rgba(236,227,208,0.15)" : ty.color}`, opacity: doneNow ? 0.6 : 1 }}>
@@ -1396,26 +1447,57 @@ function TaskRow({ task, today, binding, onComplete, onDelete, onReopen, onAddSu
           {binding ? <span className="spin" style={styles.spinner} /> : doneNow ? <Check size={16} /> : null}
         </button>
 
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ ...styles.taskText, textDecoration: doneNow ? "line-through" : "none" }}>{task.text}</div>
-          <div style={styles.taskMetaRow}>
-            <span style={{ ...styles.typeChip, color: ty.color, background: ty.chipBg }}>{ty.label}</span>
-            <span style={{ ...styles.taskDue, color: toneColor }}>
-              {binding ? "Binding its poem…" : meta.label}
-            </span>
-            {progress.total > 0 && (
-              <button onClick={() => setSubOpen((o) => !o)} style={styles.subtaskToggle}>
-                {progress.done}/{progress.total}
+        {editing ? (
+          <div style={{ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
+            <input className="field-inline" style={styles.taskEditInput} value={editText} autoFocus
+              onChange={(e) => setEditText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && saveEdit()}
+              aria-label="Edit task text" />
+            {!isDaily(task) && (
+              <div style={styles.dueRow}>
+                <span style={styles.dueLabel}>Due</span>
+                <button onClick={() => setEditDue(editDue === today ? "" : today)}
+                  style={{ ...styles.dueQuick, ...(editDue === today ? styles.dueQuickOn : {}) }}>Today</button>
+                <button onClick={() => setEditDue(editDue === tomorrow ? "" : tomorrow)}
+                  style={{ ...styles.dueQuick, ...(editDue === tomorrow ? styles.dueQuickOn : {}) }}>Tomorrow</button>
+                <label style={styles.datePick}>
+                  <CalIcon size={13} color="#8A6A3A" />
+                  <input className="field-inline" type="date" value={editDue}
+                    onChange={(e) => setEditDue(e.target.value)} aria-label="Pick due date" style={styles.datePickInput} />
+                </label>
+                {editDue && <button onClick={() => setEditDue("")} style={styles.dueClear} aria-label="Clear due date"><X size={12} /> {prettyDate(editDue)}</button>}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="addbtn" style={styles.taskEditSave} onClick={saveEdit}>Save</button>
+              <button className="iconbtn" style={styles.taskEditCancel} onClick={cancelEdit}>Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ ...styles.taskText, textDecoration: doneNow ? "line-through" : "none" }}>{task.text}</div>
+            <div style={styles.taskMetaRow}>
+              <span style={{ ...styles.typeChip, color: ty.color, background: ty.chipBg }}>{ty.label}</span>
+              <span style={{ ...styles.taskDue, color: toneColor }}>
+                {binding ? "Binding its poem…" : meta.label}
+              </span>
+              <button onClick={() => setSubOpen((o) => !o)} style={styles.subtaskToggle} aria-label={subOpen ? "Hide subtasks" : "Show subtasks"}>
+                <ListChecks size={11} />
+                {progress.total > 0 && `${progress.done}/${progress.total}`}
                 <ChevronRight size={11} style={{ transform: subOpen ? "rotate(90deg)" : "none", transition: "transform .15s" }} />
               </button>
-            )}
+            </div>
           </div>
-        </div>
+        )}
 
-        <button className="iconbtn" style={styles.taskDelete} onClick={onDelete} aria-label="Delete task"><Trash2 size={15} /></button>
+        {!editing && (
+          <>
+            <button className="iconbtn" style={styles.taskEditBtn} onClick={startEdit} aria-label="Edit task"><Pencil size={14} /></button>
+            <button className="iconbtn" style={styles.taskDelete} onClick={onDelete} aria-label="Delete task"><Trash2 size={15} /></button>
+          </>
+        )}
       </div>
 
-      {subOpen && (
+      {subOpen && !editing && (
         <div style={styles.subtaskPanel}>
           <SubtaskTree nodes={subtasks} depth={0} onToggle={(id) => onToggleSubtask(task.id, id)}
             onDelete={(id) => onDeleteSubtask(task.id, id)} onAddChild={(parentId, text) => onAddSubtask(task.id, parentId, text)} />
@@ -1855,6 +1937,10 @@ const styles = {
   taskText: { fontSize: 15.5, color: "var(--paper)", lineHeight: 1.35, wordBreak: "break-word" },
   taskDue: { fontSize: 12, marginTop: 3, fontWeight: 600, letterSpacing: "0.02em" },
   taskDelete: { width: 32, height: 32, flexShrink: 0, borderRadius: 8, border: "none", background: "transparent", color: "rgba(236,227,208,0.35)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+  taskEditBtn: { width: 32, height: 32, flexShrink: 0, borderRadius: 8, border: "none", background: "transparent", color: "rgba(236,227,208,0.3)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+  taskEditInput: { width: "100%", background: "rgba(236,227,208,0.08)", border: "1px solid rgba(236,227,208,0.2)", borderRadius: 8, padding: "8px 10px", fontSize: 15, color: "var(--paper)", fontFamily: "Inter, sans-serif", outline: "none" },
+  taskEditSave: { border: "none", background: "var(--gold)", color: "#1a130a", borderRadius: 8, padding: "7px 16px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "Inter, sans-serif" },
+  taskEditCancel: { border: "1px solid rgba(236,227,208,0.14)", background: "rgba(236,227,208,0.05)", color: "rgba(236,227,208,0.65)", borderRadius: 8, padding: "7px 14px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "Inter, sans-serif" },
 
   /* subtasks */
   subtaskToggle: { display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11.5, fontWeight: 700, color: "rgba(236,227,208,0.55)", background: "rgba(236,227,208,0.07)", border: "none", borderRadius: 999, padding: "2px 7px", cursor: "pointer", fontFamily: "Inter, sans-serif" },
@@ -1955,8 +2041,8 @@ html, body { margin: 0; height: 100%; }
   /* branding already lives in the sidebar on desktop */
   .pane-tasks .masthead { display: none; }
 
-  /* the bookcase reads as a fixed-width illustration; center it instead of stretching */
-  .pane-library .sky, .pane-library .tower { max-width: 560px; margin-left: auto; margin-right: auto; width: 100%; }
+  /* the bookcase now fills the pane's full width — shelves grow as many books wide as fit */
+  .pane-library .sky, .pane-library .tower { width: 100%; }
 }
 
 button:focus-visible, .field:focus-visible, .tabbtn:focus-visible {
