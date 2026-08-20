@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://squidly1408.github.io/pages/Bindary/sitemap.xml
+Sitemap: https://bindary-books.web.app/sitemap.xml
