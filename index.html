@@ -3,10 +3,24 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- Google tag (gtag.js) — Google Ads conversion tracking. Loaded on every page,
+         as Google requires; it only records conversions/page views, it doesn't render
+         anything, so it's safe on the login/loading screens too. -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=AW-18399927744"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+
+      gtag('config', 'AW-18399927744');
+    </script>
+
     <meta name="description" content="Bindary turns completed tasks into poems bound in a personal library." />
     <meta name="application-name" content="Bindary" />
     <meta name="theme-color" content="#12161C" />
     <meta name="robots" content="index,follow" />
+    <meta name="google-site-verification" content="Usq03OORMjkIv-hwqr8kIeBPPVU-CAIBgmm4z3Pbj5o" />
     <link rel="canonical" href="https://bindary-books.web.app/" />
     <link rel="icon" href="%BASE_URL%favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="%BASE_URL%apple-touch-icon.svg" />
@@ -22,6 +36,12 @@
     <meta name="twitter:description" content="Finish something. Bind its poem." />
     <meta name="twitter:image" content="%BASE_URL%og-image.svg" />
     <title>Bindary</title>
+
+    <!-- Google AdSense — loaded on every page per Google's requirement, but Auto ads is
+         disabled in the AdSense dashboard so it never places ads on its own. Actual ads only
+         render where src/AdBar.jsx explicitly puts a slot, which only mounts once a user is
+         signed in — never on the login or loading screens. See documentation/adsense-setup.md. -->
+    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=%VITE_ADSENSE_CLIENT_ID%" crossorigin="anonymous"></script>
   </head>
   <body>
     <div id="root"></div>

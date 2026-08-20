@@ -101,6 +101,58 @@ When deploying:
 2. Upload the contents of `dist/` to the GitHub Pages target.
 3. Keep the site published at `/pages/Bindary/` so the asset paths stay correct.
 
+## Deploying to Firebase Hosting
+
+This project is also configured to deploy to Firebase Hosting at:
+
+`https://bindary-books.web.app`
+
+`firebase.json` points hosting at `dist/` and `.firebaserc` targets the `bindary-books`
+project, so no extra setup is needed beyond having the Firebase CLI installed and being
+logged into an account with access to that project.
+
+1. Install the CLI if you don't already have it:
+
+   ```bash
+   npm install -g firebase-tools
+   ```
+
+2. Log in once:
+
+   ```bash
+   firebase login
+   ```
+
+3. Build and deploy:
+
+   ```bash
+   npm run build
+   firebase deploy --only hosting
+   ```
+
+   Firestore rules deploy separately with `firebase deploy --only firestore`.
+
+## Ads (Google AdSense)
+
+Bindary can show a single AdSense ad bar at the bottom of the app. It's off by default —
+see [documentation/adsense-setup.md](documentation/adsense-setup.md) for how to get an
+AdSense account, wire up the required env vars, and the policy notes around how the ad
+refresh is (and isn't) compliant.
+
+## Google Search Console & Google Ads tag
+
+`index.html` also carries two other Google integrations, both site-wide and unrelated to
+AdSense:
+
+- A `google-site-verification` meta tag plus [public/googlec4dc011b74e61d45.html](public/googlec4dc011b74e61d45.html),
+  used to verify site ownership in Google Search Console.
+- A Google Ads conversion tag (`gtag.js`, `AW-18399927744`) in `<head>`, used to track
+  conversions for Google Ads campaigns. Unlike the AdSense script, this one only reports
+  data — it doesn't render anything — so it's loaded unconditionally on every screen,
+  including login/loading.
+
+If either ID ever needs to change, update it directly in `index.html`.
+
 ## Data storage
 
 When a user signs in, Bindary stores data in Firestore under:

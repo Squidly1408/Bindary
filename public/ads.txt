@@ -1,0 +1,3 @@
+# Google requires this file at https://<your-domain>/ads.txt to confirm you're an
+# authorized seller of ad space on this site. See documentation/adsense-setup.md.
+google.com, pub-5369071869400012, DIRECT, f08c47fec0942fa0
