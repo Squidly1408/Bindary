@@ -258,6 +258,7 @@ export default function App() {
   const [settingsReady, setSettingsReady] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [authMode, setAuthMode] = useState("signin");
+  const [showAuth, setShowAuth] = useState(false); // false = welcome page, true = sign-in/create-account form
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
@@ -532,8 +533,14 @@ export default function App() {
             <FirebaseSetupScreen missing={firebaseStatus.missing} />
           ) : authChecking ? (
             <Splash />
+          ) : !authUser && !showAuth ? (
+            <WelcomeScreen
+              onGetStarted={() => { setAuthMode("signup"); setShowAuth(true); }}
+              onSignIn={() => { setAuthMode("signin"); setShowAuth(true); }}
+            />
           ) : !authUser ? (
             <AuthScreen
+              onBack={() => setShowAuth(false)}
               mode={authMode}
               email={email}
               password={password}
@@ -653,11 +660,59 @@ export default function App() {
   );
 }
 
-function AuthScreen({ mode, email, password, busy, error, onModeChange, onEmailChange, onPasswordChange, onSubmit, onResetPassword }) {
+function WelcomeScreen({ onGetStarted, onSignIn }) {
+  const features = [
+    { icon: <ListChecks size={18} />, title: "Track your tasks", text: "Keep a simple list, with exams and assignments joining your Today view as they draw near." },
+    { icon: <Sparkles size={18} />, title: "Finish one, get a poem", text: "Every completed task is bound into a one-of-a-kind poem, in a book of its own." },
+    { icon: <BookOpen size={18} />, title: "Build your library", text: "Books of every rarity fill your shelves — a private record of everything you've finished." },
+  ];
+  return (
+    <div style={styles.welcomeShell}>
+      <div style={styles.authGlow} aria-hidden="true" />
+      <div style={styles.welcomeInner}>
+        <Logo size={72} />
+        <div style={{ ...styles.authKicker, color: "#D6B45C", marginTop: 14 }}><Moon size={12} /> Bindary</div>
+        <h1 style={styles.welcomeTitle}>Finish something. Bind its poem.</h1>
+        <p style={styles.welcomeCopy}>A private shelf for finished work. Turn every completed task into a poem, and watch your library grow.</p>
+
+        <div style={styles.welcomeActions}>
+          <button className="addbtn" type="button" onClick={onGetStarted} style={styles.welcomePrimary}>Get started — it's free</button>
+          <button className="iconbtn" type="button" onClick={onSignIn} style={styles.welcomeSecondary}>I already have an account</button>
+        </div>
+
+        <div style={styles.welcomeFeatures}>
+          {features.map((f) => (
+            <div key={f.title} style={styles.welcomeFeature}>
+              <div style={styles.welcomeFeatureIcon}>{f.icon}</div>
+              <div>
+                <div style={styles.welcomeFeatureTitle}>{f.title}</div>
+                <div style={styles.welcomeFeatureText}>{f.text}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div style={styles.welcomeFoot}>
+          Completely free. No ads, no subscriptions.
+          <div style={{ marginTop: 6 }}>
+            <a href="/terms-of-use.html" style={styles.welcomeLink}>Terms of Use</a>
+            {" · "}
+            <a href="/privacy-policy.html" style={styles.welcomeLink}>Privacy Policy</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AuthScreen({ onBack, mode, email, password, busy, error, onModeChange, onEmailChange, onPasswordChange, onSubmit, onResetPassword }) {
   return (
     <div style={styles.authShell}>
       <div style={styles.authGlow} aria-hidden="true" />
       <div style={styles.authCard}>
+        {onBack && (
+          <button type="button" onClick={onBack} style={styles.authBack}><ChevronLeft size={14} /> Back</button>
+        )}
         <div style={styles.authMark}>
           <Logo size={64} />
         </div>
@@ -690,6 +745,11 @@ function AuthScreen({ mode, email, password, busy, error, onModeChange, onEmailC
         </form>
 
         <div style={styles.authFooter}>Your library syncs through Firebase Auth + Firestore.</div>
+        <div style={styles.legalLinks}>
+          By continuing, you agree to Bindary's{" "}
+          <a href="/terms-of-use.html" target="_blank" rel="noopener" style={styles.legalLink}>Terms of Use</a> and{" "}
+          <a href="/privacy-policy.html" target="_blank" rel="noopener" style={styles.legalLink}>Privacy Policy</a>.
+        </div>
       </div>
     </div>
   );
@@ -1158,6 +1218,12 @@ function SettingsModal({ settings, onSave, onClose, authUser }) {
               </button>
             </div>
           )}
+
+          <div style={styles.legalLinks}>
+            <a href="/terms-of-use.html" target="_blank" rel="noopener" style={styles.legalLink}>Terms of Use</a>
+            {" · "}
+            <a href="/privacy-policy.html" target="_blank" rel="noopener" style={styles.legalLink}>Privacy Policy</a>
+          </div>
         </div>
       </div>
     </div>
@@ -1866,6 +1932,24 @@ const styles = {
     background: "linear-gradient(180deg, rgba(241,232,213,0.98), rgba(225,213,188,0.96))",
     color: "#2A1C10", boxShadow: "0 30px 80px rgba(0,0,0,0.45), inset 0 0 0 1px rgba(120,90,50,0.16)",
   },
+  authBack: { display: "inline-flex", alignItems: "center", gap: 2, border: "none", background: "none", color: "#8A6A3A", fontSize: 12.5, fontWeight: 700, cursor: "pointer", padding: 0, marginBottom: 10 },
+  welcomeShell: {
+    position: "relative", flex: 1, minHeight: 0, display: "flex", justifyContent: "center", overflowY: "auto",
+    padding: "36px 22px", background: "radial-gradient(circle at top, #182041 0%, #10141C 48%, #0B0E13 100%)",
+  },
+  welcomeInner: { position: "relative", width: "100%", maxWidth: 460, margin: "auto 0", display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" },
+  welcomeTitle: { fontFamily: "Fraunces, serif", fontSize: 38, lineHeight: 1.08, margin: "12px 0 12px", color: "#F1E8D5", fontWeight: 600 },
+  welcomeCopy: { margin: 0, fontSize: 15.5, lineHeight: 1.6, color: "rgba(236,227,208,0.72)" },
+  welcomeActions: { display: "grid", gap: 10, width: "100%", marginTop: 26 },
+  welcomePrimary: { width: "100%", justifyContent: "center", padding: "14px 18px", fontSize: 15 },
+  welcomeSecondary: { width: "100%", justifyContent: "center", padding: "12px 18px", fontSize: 14, fontWeight: 700, color: "#ECE3D0", border: "1px solid rgba(214,180,92,0.35)", background: "transparent", borderRadius: 14, cursor: "pointer" },
+  welcomeFeatures: { display: "grid", gap: 12, width: "100%", marginTop: 30, textAlign: "left" },
+  welcomeFeature: { display: "flex", gap: 12, padding: "14px 16px", borderRadius: 16, background: "rgba(241,232,213,0.06)", border: "1px solid rgba(214,180,92,0.16)" },
+  welcomeFeatureIcon: { flexShrink: 0, width: 34, height: 34, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(214,180,92,0.16)", color: "#D6B45C" },
+  welcomeFeatureTitle: { fontSize: 14, fontWeight: 700, color: "#F1E8D5" },
+  welcomeFeatureText: { fontSize: 13, lineHeight: 1.5, color: "rgba(236,227,208,0.66)", marginTop: 2 },
+  welcomeFoot: { marginTop: 26, fontSize: 12.5, color: "rgba(236,227,208,0.55)", lineHeight: 1.5 },
+  welcomeLink: { color: "#D6B45C", fontWeight: 700, textDecoration: "underline" },
   authMark: { display: "flex", justifyContent: "center", marginBottom: 10 },
   authKicker: { display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, letterSpacing: "0.24em", textTransform: "uppercase", color: "#8A6A3A", fontWeight: 700 },
   authTitle: { fontFamily: "Fraunces, serif", fontSize: 28, lineHeight: 1.1, margin: "10px 0 10px", color: "#2A1C10", fontWeight: 600 },
@@ -1880,6 +1964,8 @@ const styles = {
   authSubmit: { width: "100%", justifyContent: "center", marginTop: 2 },
   authLink: { border: "none", background: "none", color: "#8A6A3A", fontSize: 12.5, fontWeight: 700, cursor: "pointer", padding: 0 },
   authFooter: { marginTop: 14, fontSize: 12, color: "#826C4C" },
+  legalLinks: { marginTop: 8, fontSize: 11.5, color: "#826C4C", lineHeight: 1.5 },
+  legalLink: { color: "#8A6A3A", fontWeight: 700, textDecoration: "underline" },
   envList: { display: "grid", gap: 8, marginTop: 14 },
   envItem: { borderRadius: 10, padding: "10px 12px", background: "rgba(214,180,92,0.12)", color: "#6E5A3D", fontSize: 13, fontFamily: "Inter, sans-serif", fontWeight: 600 },
 
