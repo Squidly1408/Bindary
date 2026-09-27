@@ -1,3 +1,5 @@
+![Bindary Banner](./.github/banner.png)
+
 # Bindary
 
 Bindary turns completed tasks into poems and stores them in a private, Firebase-backed library.
