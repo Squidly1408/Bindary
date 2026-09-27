@@ -132,24 +132,15 @@ logged into an account with access to that project.
 
    Firestore rules deploy separately with `firebase deploy --only firestore`.
 
-## Ads (Google AdSense)
-
-Bindary can show a single AdSense ad bar at the bottom of the app. It's off by default —
-see [documentation/adsense-setup.md](documentation/adsense-setup.md) for how to get an
-AdSense account, wire up the required env vars, and the policy notes around how the ad
-refresh is (and isn't) compliant.
-
 ## Google Search Console & Google Ads tag
 
-`index.html` also carries two other Google integrations, both site-wide and unrelated to
-AdSense:
+`index.html` also carries two other Google integrations, both site-wide:
 
 - A `google-site-verification` meta tag plus [public/googlec4dc011b74e61d45.html](public/googlec4dc011b74e61d45.html),
   used to verify site ownership in Google Search Console.
 - A Google Ads conversion tag (`gtag.js`, `AW-18399927744`) in `<head>`, used to track
-  conversions for Google Ads campaigns. Unlike the AdSense script, this one only reports
-  data — it doesn't render anything — so it's loaded unconditionally on every screen,
-  including login/loading.
+  conversions for Google Ads campaigns. It only reports data — it doesn't render
+  anything — so it's loaded unconditionally on every screen, including login/loading.
 
 If either ID ever needs to change, update it directly in `index.html`.
 

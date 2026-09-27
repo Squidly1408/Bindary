@@ -10,7 +10,6 @@ import {
   TIERS as RARITY, TIER_RANK as RARITY_RANK, tierOf as rarityOf, migrateLegacyRarity,
   generateBook, generateSubtaskPage as generateBookSubtaskPage,
 } from "./src/bookGenerator.js";
-import AdBar from "./src/AdBar.jsx";
 
 /* ------------------------------------------------------------------ *
  *  Bindary — finish a task, and its poem is bound into your library.
@@ -595,7 +594,6 @@ export default function App() {
                 <LibraryScreen books={books} scrollRef={libScrollRef} onOpen={(i) => setOpenIndex(i)} reduce={reduce} />
               </div>
             </div>
-            <AdBar />
           </main>
         </div>
       ) : (
@@ -626,8 +624,6 @@ export default function App() {
               />
             )}
           </div>
-
-          <AdBar />
 
           <nav style={styles.nav} aria-label="Screens">
             <TabButton active={tab === "library"} onClick={() => setTab("library")} icon={<BookOpen size={20} />} label="Library" badge={books.length} />
@@ -690,6 +686,11 @@ function AuthScreen({ mode, email, password, busy, error, onModeChange, onEmailC
         </form>
 
         <div style={styles.authFooter}>Your library syncs through Firebase Auth + Firestore.</div>
+        <div style={styles.legalLinks}>
+          By continuing, you agree to Bindary's{" "}
+          <a href="/terms-of-use.html" style={styles.legalLink}>Terms of Use</a> and{" "}
+          <a href="/privacy-policy.html" style={styles.legalLink}>Privacy Policy</a>.
+        </div>
       </div>
     </div>
   );
@@ -1880,6 +1881,8 @@ const styles = {
   authSubmit: { width: "100%", justifyContent: "center", marginTop: 2 },
   authLink: { border: "none", background: "none", color: "#8A6A3A", fontSize: 12.5, fontWeight: 700, cursor: "pointer", padding: 0 },
   authFooter: { marginTop: 14, fontSize: 12, color: "#826C4C" },
+  legalLinks: { marginTop: 8, fontSize: 11.5, color: "#826C4C", lineHeight: 1.5 },
+  legalLink: { color: "#8A6A3A", fontWeight: 700, textDecoration: "underline" },
   envList: { display: "grid", gap: 8, marginTop: 14 },
   envItem: { borderRadius: 10, padding: "10px 12px", background: "rgba(214,180,92,0.12)", color: "#6E5A3D", fontSize: 13, fontFamily: "Inter, sans-serif", fontWeight: 600 },
 
@@ -2101,17 +2104,6 @@ button:focus-visible, .field:focus-visible, .tabbtn:focus-visible {
 .lib-scroll::-webkit-scrollbar, .tasksBody::-webkit-scrollbar { width: 8px; }
 .lib-scroll::-webkit-scrollbar-thumb { background: rgba(214,180,92,0.25); border-radius: 8px; }
 
-/* ---- ad bar: one persistent AdSense slot, see src/AdBar.jsx ---- */
-.ad-bar {
-  flex-shrink: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 4px; min-height: 84px; padding: 8px 12px;
-  background: rgba(10,13,18,0.86); border-top: 1px solid rgba(214,180,92,0.14); overflow: hidden;
-}
-.ad-bar-label {
-  font-family: Inter, sans-serif; font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
-  text-transform: uppercase; color: rgba(236,227,208,0.35);
-}
-.ad-bar .adsbygoogle { min-height: 50px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::after { animation: none !important; transition: none !important; }
