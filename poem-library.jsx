@@ -436,9 +436,13 @@ export default function App() {
     setBindingId(task.id);
     try {
       const bookId = uid();
-      const identity = generateBook(bookId, task.text, task.type);
-      const subtaskPages = flattenDoneSubtasks(effectiveSubtasks(task, today))
-        .map((text) => generateBookSubtaskPage(bookId, text, task.type, identity.genre));
+      /* effort: how long the task took, and how many subtasks were finished. A Daily only counts
+         from the start of today (it resets each night); everything else counts from when it was added */
+      const doneSteps = flattenDoneSubtasks(effectiveSubtasks(task, today));
+      const startedAt = isDaily(task) ? Math.max(task.createdAt || 0, parseKey(today).getTime()) : (task.createdAt || Date.now());
+      const minutes = Math.max(0, (Date.now() - startedAt) / 60000);
+      const identity = generateBook(bookId, task.text, task.type, { minutes, steps: doneSteps.length });
+      const subtaskPages = doneSteps.map((text) => generateBookSubtaskPage(bookId, text, task.type, identity.genre));
       const pages = [{ heading: null, poem: identity.poem }, ...subtaskPages];
       const book = {
         id: bookId,
@@ -446,6 +450,8 @@ export default function App() {
         taskName: task.text,
         type: task.type || "task",
         completedAt: Date.now(),
+        minutesToComplete: Math.round(minutes),
+        stepsDone: doneSteps.length,
         material: identity.bindingForm,
         ...identity,
       };
@@ -1642,57 +1648,159 @@ function SubtaskNode({ node, depth, onToggle, onDelete, onAddChild }) {
 }
 
 function CalendarView({ tasks, onPickDate }) {
-  const [cursor, setCursor] = useState(() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() }; });
-  const [selected, setSelected] = useState(toKey(new Date()));
   const today = toKey(new Date());
+  const [mode, setMode] = useState("week");
+  const [focus, setFocus] = useState(today);
+  const touchX = useRef(null);
+  const focusDate = parseKey(focus);
 
+  /* tasks grouped by due date — open ones first, then by importance */
   const byDay = useMemo(() => {
     const map = {};
-    tasks.forEach((t) => {
-      if (!t.due) return;
-      const e = (map[t.due] ||= { open: 0, done: 0, topRank: -1, topType: "task" });
-      if (t.done) { e.done++; return; }
-      e.open++;
-      const r = typeOf(t.type).rank;
-      if (r > e.topRank) { e.topRank = r; e.topType = t.type || "task"; }
-    });
+    tasks.forEach((t) => { if (t.due) (map[t.due] ||= []).push(t); });
+    Object.values(map).forEach((list) => list.sort(compareDue));
     return map;
   }, [tasks]);
 
-  const first = new Date(cursor.y, cursor.m, 1);
-  const startOffset = (first.getDay() + 6) % 7; // Monday-first
-  const cells = Array.from({ length: 42 }).map((_, i) => {
-    const d = new Date(cursor.y, cursor.m, 1 - startOffset + i);
-    return d;
-  });
-  const monthLabel = first.toLocaleDateString(undefined, { month: "long", year: "numeric" });
-  const dayNames = ["M", "T", "W", "T", "F", "S", "S"];
+  const overdue = useMemo(
+    () => tasks.filter((t) => t.due && t.due < today && !t.done).sort(compareDue),
+    [tasks, today]
+  );
 
-  const step = (n) => setCursor((c) => { const d = new Date(c.y, c.m + n, 1); return { y: d.getFullYear(), m: d.getMonth() }; });
-  const selectedTasks = tasks.filter((t) => t.due === selected).sort((a, b) => Number(a.done) - Number(b.done));
+  /* explicit picks also prime the "Add" form's due date; plain navigation doesn't */
+  const pick = (k) => { setFocus(k); onPickDate(k); };
+  const step = (n) => {
+    if (mode === "day") setFocus(addDays(focus, n));
+    else if (mode === "week") setFocus(addDays(focus, 7 * n));
+    else setFocus(toKey(new Date(focusDate.getFullYear(), focusDate.getMonth() + n, 1)));
+  };
+  const goToday = () => setFocus(today);
+
+  const weekStart = startOfWeek(focus);
+  const label =
+    mode === "day" ? focusDate.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })
+    : mode === "week" ? `${prettyDate(weekStart)} – ${prettyDate(addDays(weekStart, 6))}`
+    : focusDate.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const subLabel = mode === "day" ? String(focusDate.getFullYear()) : mode === "week" ? String(parseKey(weekStart).getFullYear()) : "";
+
+  /* swipe left/right to move through time */
+  const onTouchStart = (e) => { touchX.current = e.touches[0].clientX; };
+  const onTouchEnd = (e) => {
+    if (touchX.current == null) return;
+    const dx = e.changedTouches[0].clientX - touchX.current;
+    touchX.current = null;
+    if (Math.abs(dx) > 50) step(dx < 0 ? 1 : -1);
+  };
 
   return (
-    <div style={styles.calWrap}>
+    <div style={styles.calWrap} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
       <div style={styles.calHead}>
-        <button className="iconbtn" style={styles.calArrow} onClick={() => step(-1)} aria-label="Previous month"><ChevronLeft size={18} /></button>
-        <div style={styles.calMonth}>{monthLabel}</div>
-        <button className="iconbtn" style={styles.calArrow} onClick={() => step(1)} aria-label="Next month"><ChevronRight size={18} /></button>
+        <button className="iconbtn" style={styles.calArrow} onClick={() => step(-1)} aria-label={`Previous ${mode}`}><ChevronLeft size={18} /></button>
+        <div style={styles.calLabelBlock}>
+          <div style={styles.calMonth}>{label}</div>
+          {subLabel && <div style={styles.calSub}>{subLabel}</div>}
+        </div>
+        <button className="iconbtn" style={styles.calArrow} onClick={() => step(1)} aria-label={`Next ${mode}`}><ChevronRight size={18} /></button>
       </div>
 
+      <div style={styles.calControls}>
+        <div style={styles.segment} role="tablist" aria-label="Calendar view">
+          {[["day", "Day"], ["week", "Week"], ["month", "Month"]].map(([key, text]) => (
+            <button key={key} type="button" role="tab" aria-selected={mode === key} onClick={() => setMode(key)}
+              style={{ ...styles.segBtn, ...(mode === key ? styles.segActive : {}) }}>{text}</button>
+          ))}
+        </div>
+        <button type="button" onClick={goToday} disabled={focus === today}
+          style={{ ...styles.dueQuick, ...(focus === today ? { opacity: 0.4, cursor: "default" } : {}) }}>Today</button>
+      </div>
+
+      {mode === "day" && (
+        <DayAgenda
+          items={byDay[focus] || []} overdue={focus === today ? overdue : []}
+          isToday={focus === today} dateKey={focus}
+        />
+      )}
+
+      {mode === "week" && (
+        <div>
+          {Array.from({ length: 7 }).map((_, i) => {
+            const k = addDays(weekStart, i);
+            const d = parseKey(k);
+            const isToday = k === today;
+            const items = byDay[k] || [];
+            return (
+              <div key={k} style={styles.calWeekDay}>
+                <button type="button" onClick={() => { pick(k); setMode("day"); }} style={styles.calWeekHead}
+                  aria-label={`Open ${d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}`}>
+                  <span style={{ ...styles.calWeekDate, ...(isToday ? styles.calWeekDateToday : {}) }}>{d.getDate()}</span>
+                  <span style={{ color: isToday ? "var(--gold-bright)" : "rgba(236,227,208,0.6)", fontWeight: 600 }}>
+                    {d.toLocaleDateString(undefined, { weekday: "long" })}
+                  </span>
+                  <span style={styles.calWeekCount}>{items.length ? `${items.length} due` : ""}</span>
+                </button>
+                {items.map((t) => <DueRow key={t.id} task={t} />)}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {mode === "month" && (
+        <MonthGrid
+          byDay={byDay} today={today} focus={focus} cursor={focusDate}
+          onPick={pick} items={byDay[focus] || []} dateKey={focus}
+        />
+      )}
+    </div>
+  );
+}
+
+function DayAgenda({ items, overdue, isToday, dateKey }) {
+  return (
+    <div>
+      {overdue.length > 0 && (
+        <>
+          <div style={{ ...styles.sectionLabel, color: "#E0736B" }}>Overdue · {overdue.length}</div>
+          {overdue.map((t) => <DueRow key={t.id} task={t} showDate />)}
+        </>
+      )}
+      {items.length === 0 && overdue.length === 0 ? (
+        <div style={{ ...styles.muted, padding: "18px 4px" }}>
+          {isToday ? "Nothing due today." : `Nothing due ${prettyDate(dateKey)}.`} Add a task above — this date is set for you.
+        </div>
+      ) : items.length > 0 ? (
+        <>
+          <div style={styles.sectionLabel}>Due · {items.length}</div>
+          {items.map((t) => <DueRow key={t.id} task={t} />)}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function MonthGrid({ byDay, today, focus, cursor, onPick, items, dateKey }) {
+  const first = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
+  const startOffset = (first.getDay() + 6) % 7; // Monday-first
+  const cells = Array.from({ length: 42 }).map((_, i) => new Date(cursor.getFullYear(), cursor.getMonth(), 1 - startOffset + i));
+  const dayNames = ["M", "T", "W", "T", "F", "S", "S"];
+
+  return (
+    <>
       <div style={styles.calGridHead}>
         {dayNames.map((d, i) => <div key={i} style={styles.calDayName}>{d}</div>)}
       </div>
-
       <div style={styles.calGrid}>
         {cells.map((d, i) => {
           const k = toKey(d);
-          const inMonth = d.getMonth() === cursor.m;
-          const info = byDay[k];
+          const inMonth = d.getMonth() === cursor.getMonth();
+          const list = byDay[k] || [];
+          const open = list.filter((t) => !t.done);
+          const topType = open.length ? open.reduce((a, b) => (typeOf(b.type).rank > typeOf(a.type).rank ? b : a)).type : null;
           const isToday = k === today;
-          const isSel = k === selected;
-          const overdue = info && info.open > 0 && k < today;
+          const isSel = k === focus;
+          const overdueDay = open.length > 0 && k < today;
           return (
-            <button key={i} onClick={() => { setSelected(k); onPickDate(k); }}
+            <button key={i} type="button" onClick={() => onPick(k)}
               style={{
                 ...styles.calCell,
                 color: inMonth ? "var(--paper)" : "rgba(236,227,208,0.22)",
@@ -1701,11 +1809,11 @@ function CalendarView({ tasks, onPickDate }) {
                 boxShadow: isToday && !isSel ? "inset 0 0 0 1px rgba(236,227,208,0.28)" : "none",
               }}>
               <span>{d.getDate()}</span>
-              {info && (
+              {list.length > 0 && (
                 <span style={{
                   ...styles.calDot,
-                  background: info.open > 0 ? typeOf(info.topType).color : "rgba(236,227,208,0.35)",
-                  boxShadow: overdue ? "0 0 0 2px rgba(224,115,107,0.45)" : "none",
+                  background: open.length ? typeOf(topType).color : "rgba(236,227,208,0.35)",
+                  boxShadow: overdueDay ? "0 0 0 2px rgba(224,115,107,0.45)" : "none",
                 }} />
               )}
             </button>
@@ -1713,24 +1821,40 @@ function CalendarView({ tasks, onPickDate }) {
         })}
       </div>
 
-      <div style={styles.calSelectedHead}>Due {parseKey(selected).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}</div>
-      {selectedTasks.length === 0 ? (
+      <div style={styles.calSelectedHead}>Due {parseKey(dateKey).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}</div>
+      {items.length === 0 ? (
         <div style={{ ...styles.muted, padding: "6px 2px 4px" }}>Nothing due this day. Add a task above — this date is set for you.</div>
       ) : (
-        selectedTasks.map((t) => {
-          const ty = typeOf(t.type);
-          return (
-            <div key={t.id} style={styles.calTaskRow}>
-              <span style={{ ...styles.calTaskDotBig, background: t.done ? "rgba(236,227,208,0.35)" : ty.color }} />
-              <span style={{ textDecoration: t.done ? "line-through" : "none", opacity: t.done ? 0.6 : 1, flex: 1, minWidth: 0 }}>{t.text}</span>
-              <span style={{ ...styles.typeChip, color: ty.color, background: ty.chipBg }}>{ty.label}</span>
-            </div>
-          );
-        })
+        items.map((t) => <DueRow key={t.id} task={t} />)
       )}
+    </>
+  );
+}
+
+/* one due item — shared by day, week and month views */
+function DueRow({ task, showDate }) {
+  const ty = typeOf(task.type);
+  return (
+    <div style={styles.calTaskRow}>
+      <span style={{ ...styles.calTaskDotBig, background: task.done ? "rgba(236,227,208,0.35)" : ty.color }} />
+      <span style={{ textDecoration: task.done ? "line-through" : "none", opacity: task.done ? 0.6 : 1, flex: 1, minWidth: 0 }}>
+        {task.text}
+        {showDate && <span style={styles.calTaskDate}> · {prettyDate(task.due)}</span>}
+      </span>
+      <span style={{ ...styles.typeChip, color: ty.color, background: ty.chipBg }}>{ty.label}</span>
     </div>
   );
 }
+
+/* open before done, then most important first */
+function compareDue(a, b) {
+  if (!!a.done !== !!b.done) return a.done ? 1 : -1;
+  return typeOf(b.type).rank - typeOf(a.type).rank;
+}
+
+const addDays = (key, n) => { const d = parseKey(key); d.setDate(d.getDate() + n); return toKey(d); };
+/* Monday of the week containing `key` */
+const startOfWeek = (key) => addDays(key, -((parseKey(key).getDay() + 6) % 7));
 
 /* ================================================================== *
  *  STYLES
@@ -2055,15 +2179,24 @@ const styles = {
 
   /* calendar */
   calWrap: { padding: "4px 4px 6px" },
-  calHead: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 6px 12px" },
-  calMonth: { fontFamily: "Fraunces, serif", fontSize: 18, fontWeight: 600 },
-  calArrow: { width: 34, height: 34, borderRadius: 10, border: "none", background: "rgba(236,227,208,0.06)", color: "var(--paper)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+  calHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "4px 6px 10px" },
+  calLabelBlock: { textAlign: "center", minWidth: 0, flex: 1 },
+  calMonth: { fontFamily: "Fraunces, serif", fontSize: 17, fontWeight: 600 },
+  calSub: { fontSize: 11.5, color: "rgba(236,227,208,0.45)", marginTop: 1 },
+  calArrow: { width: 34, height: 34, borderRadius: 10, border: "none", background: "rgba(236,227,208,0.06)", color: "var(--paper)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  calControls: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "0 4px 12px" },
   calGridHead: { display: "grid", gridTemplateColumns: "repeat(7,1fr)", marginBottom: 4 },
   calDayName: { textAlign: "center", fontSize: 11, letterSpacing: "0.05em", color: "rgba(236,227,208,0.4)", fontWeight: 600, padding: "2px 0" },
   calGrid: { display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 3 },
   calCell: { aspectRatio: "1 / 1", borderRadius: 9, cursor: "pointer", position: "relative", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13.5, fontFamily: "Inter, sans-serif", background: "transparent" },
   calDot: { position: "absolute", bottom: 5, width: 5, height: 5, borderRadius: "50%" },
   calSelectedHead: { fontFamily: "Fraunces, serif", fontSize: 15, fontWeight: 600, padding: "18px 4px 8px", borderTop: "1px solid rgba(236,227,208,0.08)", marginTop: 12, color: "var(--paper)" },
+  calWeekDay: { borderTop: "1px solid rgba(236,227,208,0.08)", padding: "2px 0 6px" },
+  calWeekHead: { display: "flex", alignItems: "center", gap: 10, width: "100%", border: "none", background: "transparent", color: "var(--paper)", padding: "10px 4px", cursor: "pointer", fontFamily: "Inter, sans-serif", fontSize: 14, textAlign: "left" },
+  calWeekDate: { width: 28, height: 28, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontFamily: "Fraunces, serif", fontSize: 15, fontWeight: 600 },
+  calWeekDateToday: { background: "rgba(214,180,92,0.22)", color: "var(--gold-bright)", boxShadow: "inset 0 0 0 1px rgba(214,180,92,0.5)" },
+  calWeekCount: { marginLeft: "auto", fontSize: 12, color: "rgba(236,227,208,0.45)" },
+  calTaskDate: { color: "rgba(236,227,208,0.5)", fontSize: 12.5 },
   calTaskRow: { display: "flex", alignItems: "center", gap: 10, padding: "9px 6px", fontSize: 14.5, color: "var(--paper)" },
   calTaskDotBig: { width: 7, height: 7, borderRadius: "50%", flexShrink: 0 },
 };

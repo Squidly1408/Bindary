@@ -64,6 +64,19 @@ export const TIERS = [
 export const TIER_RANK = Object.fromEntries(TIERS.map((t) => [t.key, t.rank]));
 export const tierOf = (key) => TIERS.find((t) => t.key === key) || TIERS[0];
 
+/* ---- effort luck: longer tasks and more finished steps tilt the draw toward rarer tiers ----
+   bonus is 0 for a quick, bare task. Each tier's weight is scaled by (1 + bonus * rank * 0.5), so
+   Common (rank 0) never changes and Relic (rank 6) gains the most. Time saturates at +2 (about 7.5h),
+   steps at +1.5 (10 steps). Max total bonus is 3.5. */
+export function effortBonus({ minutes = 0, steps = 0 } = {}) {
+  const timeBonus = Math.min(2, Math.log2(1 + Math.max(0, minutes) / 30) * 0.5);
+  const stepBonus = Math.min(1.5, Math.max(0, steps) * 0.15);
+  return timeBonus + stepBonus;
+}
+function tierWeights(bonus) {
+  return TIERS.map((t) => ({ ...t, weight: t.weight * (1 + bonus * t.rank * 0.5) }));
+}
+
 /* legacy 5-tier -> new 7-tier, for books saved before this system existed */
 const LEGACY_TIER_MAP = { common: "common", uncommon: "uncommon", rare: "rare", fine: "legendary", first: "relic" };
 export function migrateLegacyRarity(oldKey) {
@@ -523,11 +536,11 @@ function cleanTaskText(task) {
  * result needs to be stored except this seed, though we do persist the
  * resolved fields so the library can render/filter without recomputing.
  */
-export function generateBook(seed, taskText, taskType) {
+export function generateBook(seed, taskText, taskType, effort = {}) {
   const rand = mulberry(hashInt(`${seed}|${taskText}|${taskType}`));
   const clean = cleanTaskText(taskText);
 
-  const tier = pickWeighted(TIERS, rand);
+  const tier = pickWeighted(tierWeights(effortBonus(effort)), rand);
   const genre = pick(GENRES, rand);
   const subgenre = pick(genre.subgenres, rand);
   const collection = pick(COLLECTIONS, rand);
