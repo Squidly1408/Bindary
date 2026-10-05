@@ -1307,6 +1307,7 @@ function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId, 
   const todayIds = new Set(todayItems.map((t) => t.id));
   const restActive = active.filter((t) => !todayIds.has(t.id));
 
+  const shownToday = todayItems.filter((t) => filter === "all" || t.type === filter);
   const shownActive = restActive.filter((t) => filter === "all" || t.type === filter);
   const shownDone = done.filter((t) => filter === "all" || t.type === filter);
   const isEmpty = active.length === 0 && done.length === 0;
@@ -1394,10 +1395,10 @@ function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId, 
               <NextUp task={nextUp} today={today} binding={bindingId === nextUp.id} onComplete={() => onComplete(nextUp)} />
             )}
 
-            {todayItems.length > 0 && filter === "all" && (
+            {shownToday.length > 0 && (
               <>
-                <div style={styles.sectionLabel}><Clock size={11} style={{ marginRight: 5, verticalAlign: -1 }} />Today · {todayItems.length}</div>
-                {todayItems.map((t) => (
+                <div style={styles.sectionLabel}><Clock size={11} style={{ marginRight: 5, verticalAlign: -1 }} />Today · {shownToday.length}</div>
+                {shownToday.map((t) => (
                   <TaskRow key={t.id} task={t} today={today} binding={bindingId === t.id}
                     onComplete={() => onComplete(t)} onDelete={() => onDelete(t.id)} onReopen={() => onReopen(t.id)}
                     onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} onEditTask={onEditTask} />
@@ -1419,7 +1420,7 @@ function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId, 
               })}
             </div>
 
-            {shownActive.length === 0 && shownDone.length === 0 ? (
+            {shownToday.length === 0 && shownActive.length === 0 && shownDone.length === 0 ? (
               <div style={{ ...styles.muted, textAlign: "center", padding: "28px 20px" }}>Nothing in this tier yet.</div>
             ) : (
               <>
