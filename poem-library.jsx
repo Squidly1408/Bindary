@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { BookOpen, Plus, X, ChevronLeft, ChevronRight, Trash2, Moon, Sparkles, Check, Calendar as CalIcon, List as ListIcon, Settings as SettingsIcon, Clock, ListChecks, Pencil } from "lucide-react";
+import { BookOpen, Plus, X, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Trash2, Moon, Sparkles, Check, Calendar as CalIcon, List as ListIcon, Settings as SettingsIcon, Clock, ListChecks, Pencil } from "lucide-react";
 import {
   createUserWithEmailAndPassword, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signOut,
   updateProfile, updateEmail, updatePassword, reauthenticateWithCredential, EmailAuthProvider,
@@ -10,7 +10,6 @@ import {
   TIERS as RARITY, TIER_RANK as RARITY_RANK, tierOf as rarityOf, migrateLegacyRarity,
   generateBook, generateSubtaskPage as generateBookSubtaskPage,
 } from "./src/bookGenerator.js";
-import AdBar from "./src/AdBar.jsx";
 
 /* ------------------------------------------------------------------ *
  *  Bindary — finish a task, and its poem is bound into your library.
@@ -105,6 +104,18 @@ function addToSubtaskTree(list, parentId, node) {
       ? { ...n, subtasks: [...(n.subtasks || []), node] }
       : { ...n, subtasks: addToSubtaskTree(n.subtasks, parentId, node) }
   ));
+}
+/* swap `id` with its previous (dir -1) or next (dir +1) sibling, wherever it is in the tree —
+   reordering is just array position, so no separate "order" field is needed for subtasks */
+function moveInSubtaskTree(list, id, dir) {
+  const arr = list || [];
+  const idx = arr.findIndex((n) => n.id === id);
+  if (idx === -1) return arr.map((n) => ({ ...n, subtasks: moveInSubtaskTree(n.subtasks, id, dir) }));
+  const other = idx + dir;
+  if (other < 0 || other >= arr.length) return arr;
+  const copy = arr.slice();
+  [copy[idx], copy[other]] = [copy[other], copy[idx]];
+  return copy;
 }
 /* clear every `done` flag in the tree, keeping its shape */
 function zeroSubtaskTree(list) {
@@ -376,9 +387,11 @@ export default function App() {
   const addTask = useCallback(async (text, due, type) => {
     if (!authUser || !tasksRef) return;
     const daily = type === "daily";
+    const now = Date.now();
     const t = {
       id: uid(), text: text.trim(), due: daily ? null : (due || null), type: type || "task",
-      done: false, lastCompletedDate: null, subtasks: [], subtasksDate: null, createdAt: Date.now(),
+      done: false, lastCompletedDate: null, subtasks: [], subtasksDate: null, createdAt: now,
+      order: now, // manual list position — new tasks start at the bottom, drag/arrows move them from there
     };
     if (!t.text) return;
     await setDoc(doc(tasksRef, t.id), t);
@@ -428,6 +441,10 @@ export default function App() {
 
   const deleteSubtask = useCallback((taskId, subtaskId) => {
     updateSubtasks(taskId, (list) => removeFromSubtaskTree(list, subtaskId));
+  }, [updateSubtasks]);
+
+  const moveSubtask = useCallback((taskId, subtaskId, dir) => {
+    updateSubtasks(taskId, (list) => moveInSubtaskTree(list, subtaskId, dir));
   }, [updateSubtasks]);
 
   const completeTask = useCallback(async (task) => {
@@ -599,7 +616,7 @@ export default function App() {
                 <TasksScreen
                   tasks={tasks} onAdd={addTask} onComplete={completeTask}
                   onDelete={deleteTask} onReopen={reopenTask} bindingId={bindingId}
-                  onAddSubtask={addSubtask} onToggleSubtask={toggleSubtask} onDeleteSubtask={deleteSubtask}
+                  onAddSubtask={addSubtask} onToggleSubtask={toggleSubtask} onDeleteSubtask={deleteSubtask} onMoveSubtask={moveSubtask}
                   onEditTask={editTask}
                   settings={settings}
                 />
@@ -608,7 +625,6 @@ export default function App() {
                 <LibraryScreen books={books} scrollRef={libScrollRef} onOpen={(i) => setOpenIndex(i)} reduce={reduce} />
               </div>
             </div>
-            <AdBar />
           </main>
         </div>
       ) : (
@@ -633,14 +649,12 @@ export default function App() {
               <TasksScreen
                 tasks={tasks} onAdd={addTask} onComplete={completeTask}
                 onDelete={deleteTask} onReopen={reopenTask} bindingId={bindingId}
-                onAddSubtask={addSubtask} onToggleSubtask={toggleSubtask} onDeleteSubtask={deleteSubtask}
+                onAddSubtask={addSubtask} onToggleSubtask={toggleSubtask} onDeleteSubtask={deleteSubtask} onMoveSubtask={moveSubtask}
                 onEditTask={editTask}
                 settings={settings}
               />
             )}
           </div>
-
-          <AdBar />
 
           <nav style={styles.nav} aria-label="Screens">
             <TabButton active={tab === "library"} onClick={() => setTab("library")} icon={<BookOpen size={20} />} label="Library" badge={books.length} />
@@ -1275,7 +1289,7 @@ function Celebration({ book, onClose, reduce }) {
 /* ================================================================== *
  *  TASKS + CALENDAR
  * ================================================================== */
-function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId, onAddSubtask, onToggleSubtask, onDeleteSubtask, onEditTask, settings = DEFAULT_SETTINGS }) {
+function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId, onAddSubtask, onToggleSubtask, onDeleteSubtask, onMoveSubtask, onEditTask, settings = DEFAULT_SETTINGS }) {
   const [view, setView] = useState("list");
   const [text, setText] = useState("");
   const [due, setDue] = useState("");
@@ -1289,23 +1303,31 @@ function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId, 
   const active = tasks.filter((t) => !isDoneToday(t, today));
   const done = tasks.filter((t) => isDoneToday(t, today));
   const rank = (t) => typeOf(t.type).rank;
-  active.sort((a, b) => {
-    const aDaily = isDaily(a), bDaily = isDaily(b);
-    if (aDaily !== bDaily) return aDaily ? -1 : 1;
-    if (aDaily && bDaily) return b.createdAt - a.createdAt;
-    if (a.due && b.due && a.due !== b.due) return a.due.localeCompare(b.due);
-    if (a.due && !b.due) return -1;
-    if (!a.due && b.due) return 1;
+
+  /* "Next up" always surfaces the soonest real deadline, independent of manual ordering below */
+  const nextUp = active.filter((t) => t.due).sort((a, b) => {
+    if (a.due !== b.due) return a.due.localeCompare(b.due);
     if (rank(a) !== rank(b)) return rank(b) - rank(a);
     return b.createdAt - a.createdAt;
-  });
+  })[0];
 
-  const nextUp = active.find((t) => t.due);
+  /* manual order: every task carries an `order` number (set on creation, reassigned by dragging/
+     the move arrows). Tasks from before this existed fall back to their creation time, so they
+     still land in a sensible, stable spot until someone moves them. */
+  const orderOf = (t) => (typeof t.order === "number" ? t.order : (t.createdAt ?? 0));
+  const byOrder = (a, b) => orderOf(a) - orderOf(b);
+  const moveTask = (list, index, dir) => {
+    const other = index + dir;
+    if (other < 0 || other >= list.length) return;
+    const a = list[index], b = list[other];
+    onEditTask(a.id, { order: orderOf(b) });
+    onEditTask(b.id, { order: orderOf(a) });
+  };
 
   /* Today's agenda: recurring dailies, plus assignments/exams once they enter their configured lead window */
-  const todayItems = active.filter((t) => isDaily(t) || inLeadWindow(t, settings, today));
+  const todayItems = active.filter((t) => isDaily(t) || inLeadWindow(t, settings, today)).sort(byOrder);
   const todayIds = new Set(todayItems.map((t) => t.id));
-  const restActive = active.filter((t) => !todayIds.has(t.id));
+  const restActive = active.filter((t) => !todayIds.has(t.id)).sort(byOrder);
 
   const shownToday = todayItems.filter((t) => filter === "all" || t.type === filter);
   const shownActive = restActive.filter((t) => filter === "all" || t.type === filter);
@@ -1398,10 +1420,13 @@ function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId, 
             {shownToday.length > 0 && (
               <>
                 <div style={styles.sectionLabel}><Clock size={11} style={{ marginRight: 5, verticalAlign: -1 }} />Today · {shownToday.length}</div>
-                {shownToday.map((t) => (
+                {shownToday.map((t, i) => (
                   <TaskRow key={t.id} task={t} today={today} binding={bindingId === t.id}
                     onComplete={() => onComplete(t)} onDelete={() => onDelete(t.id)} onReopen={() => onReopen(t.id)}
-                    onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} onEditTask={onEditTask} />
+                    onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask}
+                    onMoveSubtask={onMoveSubtask} onEditTask={onEditTask}
+                    reorderable onMoveUp={i > 0 ? () => moveTask(shownToday, i, -1) : null}
+                    onMoveDown={i < shownToday.length - 1 ? () => moveTask(shownToday, i, 1) : null} />
                 ))}
               </>
             )}
@@ -1424,17 +1449,21 @@ function TasksScreen({ tasks, onAdd, onComplete, onDelete, onReopen, bindingId, 
               <div style={{ ...styles.muted, textAlign: "center", padding: "28px 20px" }}>Nothing in this tier yet.</div>
             ) : (
               <>
-                {shownActive.map((t) => (
+                {shownActive.map((t, i) => (
                   <TaskRow key={t.id} task={t} today={today} binding={bindingId === t.id}
-                    onComplete={() => onComplete(t)} onDelete={() => onDelete(t.id)}
-                    onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} onEditTask={onEditTask} />
+                    onComplete={() => onComplete(t)} onDelete={() => onDelete(t.id)} onReopen={() => onReopen(t.id)}
+                    onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask}
+                    onMoveSubtask={onMoveSubtask} onEditTask={onEditTask}
+                    reorderable onMoveUp={i > 0 ? () => moveTask(shownActive, i, -1) : null}
+                    onMoveDown={i < shownActive.length - 1 ? () => moveTask(shownActive, i, 1) : null} />
                 ))}
                 {shownDone.length > 0 && (
                   <>
                     <div style={styles.sectionLabel}>Bound · {shownDone.length}</div>
                     {shownDone.map((t) => (
                       <TaskRow key={t.id} task={t} today={today} onReopen={() => onReopen(t.id)} onDelete={() => onDelete(t.id)}
-                        onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask} onEditTask={onEditTask} />
+                        onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask}
+                        onMoveSubtask={onMoveSubtask} onEditTask={onEditTask} />
                     ))}
                   </>
                 )}
@@ -1489,7 +1518,7 @@ function dueMeta(task, doneNow, today) {
   return { label: prettyDate(due), tone: "later" };
 }
 
-function TaskRow({ task, today, binding, onComplete, onDelete, onReopen, onAddSubtask, onToggleSubtask, onDeleteSubtask, onEditTask }) {
+function TaskRow({ task, today, binding, onComplete, onDelete, onReopen, onAddSubtask, onToggleSubtask, onDeleteSubtask, onMoveSubtask, onEditTask, reorderable, onMoveUp, onMoveDown }) {
   const doneNow = isDoneToday(task, today);
   const meta = dueMeta(task, doneNow, today);
   const ty = typeOf(task.type);
@@ -1568,6 +1597,12 @@ function TaskRow({ task, today, binding, onComplete, onDelete, onReopen, onAddSu
 
         {!editing && (
           <>
+            {reorderable && (
+              <div style={styles.reorderCol}>
+                <button className="iconbtn" style={styles.reorderBtn} onClick={onMoveUp} disabled={!onMoveUp} aria-label="Move task up"><ChevronUp size={13} /></button>
+                <button className="iconbtn" style={styles.reorderBtn} onClick={onMoveDown} disabled={!onMoveDown} aria-label="Move task down"><ChevronDown size={13} /></button>
+              </div>
+            )}
             <button className="iconbtn" style={styles.taskEditBtn} onClick={startEdit} aria-label="Edit task"><Pencil size={14} /></button>
             <button className="iconbtn" style={styles.taskDelete} onClick={onDelete} aria-label="Delete task"><Trash2 size={15} /></button>
           </>
@@ -1577,6 +1612,7 @@ function TaskRow({ task, today, binding, onComplete, onDelete, onReopen, onAddSu
       {subOpen && !editing && (
         <div style={styles.subtaskPanel}>
           <SubtaskTree nodes={subtasks} depth={0} onToggle={(id) => onToggleSubtask(task.id, id)}
+            onMove={(id, dir) => onMoveSubtask(task.id, id, dir)}
             onDelete={(id) => onDeleteSubtask(task.id, id)} onAddChild={(parentId, text) => onAddSubtask(task.id, parentId, text)} />
 
           {addingRoot ? (
@@ -1597,18 +1633,19 @@ function TaskRow({ task, today, binding, onComplete, onDelete, onReopen, onAddSu
   );
 }
 
-function SubtaskTree({ nodes, depth, onToggle, onDelete, onAddChild }) {
+function SubtaskTree({ nodes, depth, onToggle, onDelete, onAddChild, onMove }) {
   if (!nodes || nodes.length === 0) return null;
   return (
     <div style={{ ...styles.subtaskList, paddingLeft: depth * 18 }}>
-      {nodes.map((n) => (
-        <SubtaskNode key={n.id} node={n} depth={depth} onToggle={onToggle} onDelete={onDelete} onAddChild={onAddChild} />
+      {nodes.map((n, i) => (
+        <SubtaskNode key={n.id} node={n} depth={depth} index={i} siblingsCount={nodes.length}
+          onToggle={onToggle} onDelete={onDelete} onAddChild={onAddChild} onMove={onMove} />
       ))}
     </div>
   );
 }
 
-function SubtaskNode({ node, depth, onToggle, onDelete, onAddChild }) {
+function SubtaskNode({ node, depth, index, siblingsCount, onToggle, onDelete, onAddChild, onMove }) {
   const [open, setOpen] = useState(true);
   const [adding, setAdding] = useState(false);
   const [text, setText] = useState("");
@@ -1628,6 +1665,8 @@ function SubtaskNode({ node, depth, onToggle, onDelete, onAddChild }) {
           {node.done ? <Check size={11} /> : null}
         </button>
         <span style={{ ...styles.subtaskText, textDecoration: node.done ? "line-through" : "none", opacity: node.done ? 0.55 : 1 }}>{node.text}</span>
+        <button className="iconbtn" onClick={() => onMove(node.id, -1)} disabled={index === 0} style={styles.subtaskMoveBtn} aria-label="Move subtask up"><ChevronUp size={11} /></button>
+        <button className="iconbtn" onClick={() => onMove(node.id, 1)} disabled={index === siblingsCount - 1} style={styles.subtaskMoveBtn} aria-label="Move subtask down"><ChevronDown size={11} /></button>
         <button className="iconbtn" onClick={() => setAdding((a) => !a)} style={styles.subtaskAddBtn} aria-label="Add nested subtask"><Plus size={12} /></button>
         <button className="iconbtn" onClick={() => onDelete(node.id)} style={styles.subtaskDeleteBtn} aria-label="Delete subtask"><Trash2 size={12} /></button>
       </div>
@@ -1642,7 +1681,7 @@ function SubtaskNode({ node, depth, onToggle, onDelete, onAddChild }) {
       )}
 
       {open && hasChildren && (
-        <SubtaskTree nodes={node.subtasks} depth={depth + 1} onToggle={onToggle} onDelete={onDelete} onAddChild={onAddChild} />
+        <SubtaskTree nodes={node.subtasks} depth={depth + 1} onToggle={onToggle} onDelete={onDelete} onAddChild={onAddChild} onMove={onMove} />
       )}
     </div>
   );
@@ -2152,6 +2191,8 @@ const styles = {
   taskText: { fontSize: 15.5, color: "var(--paper)", lineHeight: 1.35, wordBreak: "break-word" },
   taskDue: { fontSize: 12, marginTop: 3, fontWeight: 600, letterSpacing: "0.02em" },
   taskDelete: { width: 32, height: 32, flexShrink: 0, borderRadius: 8, border: "none", background: "transparent", color: "rgba(236,227,208,0.35)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+  reorderCol: { display: "flex", flexDirection: "column", flexShrink: 0 },
+  reorderBtn: { width: 22, height: 16, border: "none", background: "transparent", color: "rgba(236,227,208,0.35)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
   taskEditBtn: { width: 32, height: 32, flexShrink: 0, borderRadius: 8, border: "none", background: "transparent", color: "rgba(236,227,208,0.3)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
   taskEditInput: { width: "100%", background: "rgba(236,227,208,0.08)", border: "1px solid rgba(236,227,208,0.2)", borderRadius: 8, padding: "8px 10px", fontSize: 15, color: "var(--paper)", fontFamily: "Inter, sans-serif", outline: "none" },
   taskEditSave: { border: "none", background: "var(--gold)", color: "#1a130a", borderRadius: 8, padding: "7px 16px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "Inter, sans-serif" },
@@ -2167,6 +2208,7 @@ const styles = {
   subtaskCaretSpacer: { width: 16, flexShrink: 0 },
   subCheck: { width: 18, height: 18, flexShrink: 0, borderRadius: 5, border: "1.5px solid rgba(214,180,92,0.45)", background: "transparent", color: "#1a130a", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
   subtaskText: { flex: 1, minWidth: 0, fontSize: 13, color: "rgba(236,227,208,0.85)", wordBreak: "break-word" },
+  subtaskMoveBtn: { width: 16, height: 20, flexShrink: 0, border: "none", background: "transparent", color: "rgba(236,227,208,0.3)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
   subtaskAddBtn: { width: 20, height: 20, flexShrink: 0, border: "none", background: "transparent", color: "rgba(236,227,208,0.3)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
   subtaskDeleteBtn: { width: 20, height: 20, flexShrink: 0, border: "none", background: "transparent", color: "rgba(236,227,208,0.25)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
   subtaskAddRow: { display: "flex", alignItems: "center", gap: 6, padding: "2px 0 6px 22px" },
@@ -2315,23 +2357,13 @@ button:focus-visible, .field:focus-visible, .tabbtn:focus-visible {
 
 .addbtn:hover { filter: brightness(1.06); }
 .iconbtn:hover { filter: brightness(1.1); }
+.iconbtn:disabled { opacity: 0.25; cursor: default; filter: none; }
 .check:hover { border-color: var(--gold-bright); }
 .tabbtn { -webkit-tap-highlight-color: transparent; }
 
 .lib-scroll::-webkit-scrollbar, .tasksBody::-webkit-scrollbar { width: 8px; }
 .lib-scroll::-webkit-scrollbar-thumb { background: rgba(214,180,92,0.25); border-radius: 8px; }
 
-/* ---- ad bar: one persistent AdSense slot, see src/AdBar.jsx ---- */
-.ad-bar {
-  flex-shrink: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 4px; min-height: 84px; padding: 8px 12px;
-  background: rgba(10,13,18,0.86); border-top: 1px solid rgba(214,180,92,0.14); overflow: hidden;
-}
-.ad-bar-label {
-  font-family: Inter, sans-serif; font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
-  text-transform: uppercase; color: rgba(236,227,208,0.35);
-}
-.ad-bar .adsbygoogle { min-height: 50px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::after { animation: none !important; transition: none !important; }
