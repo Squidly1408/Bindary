@@ -1018,8 +1018,8 @@ function BookModal({ books, index, onClose, onNav, onDeleteBook }) {
   }, [index, books.length, onClose, onNav]);
 
   return (
-    <div style={styles.overlay} onClick={onClose}>
-      <div className="book-open" style={styles.page} onClick={(e) => e.stopPropagation()} role="dialog" aria-label={book.title}>
+    <div className="modal-overlay" style={styles.overlay} onClick={onClose}>
+      <div className="book-open modal-card" style={styles.page} onClick={(e) => e.stopPropagation()} role="dialog" aria-label={book.title}>
         <button className="iconbtn" style={styles.pageClose} onClick={onClose} aria-label="Close book"><X size={18} /></button>
 
         <div style={styles.pageInner}>
@@ -1159,8 +1159,8 @@ function SettingsModal({ settings, onSave, onClose, authUser }) {
   };
 
   return (
-    <div style={styles.overlay} onClick={onClose}>
-      <div className="book-open" style={styles.settingsCard} onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Settings">
+    <div className="modal-overlay" style={styles.overlay} onClick={onClose}>
+      <div className="book-open modal-card" style={styles.settingsCard} onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Settings">
         <button className="iconbtn" style={styles.pageClose} onClick={onClose} aria-label="Close settings"><X size={18} /></button>
         <div style={styles.settingsInner}>
           <div style={styles.pageEyebrow}>Settings</div>
@@ -2001,10 +2001,12 @@ const styles = {
   /* modal */
   overlay: {
     position: "fixed", inset: 0, background: "rgba(6,8,12,0.82)", backdropFilter: "blur(4px)",
-    display: "flex", alignItems: "center", justifyContent: "center", padding: 18, zIndex: 60,
+    display: "flex", justifyContent: "center", zIndex: 60, overflowY: "auto",
+    padding: "max(18px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left))",
   },
+  /* card height is capped by .modal-card in the global CSS */
   page: {
-    position: "relative", width: "100%", maxWidth: 380, maxHeight: "86vh",
+    position: "relative", width: "100%", maxWidth: 380,
     background: "linear-gradient(135deg,#F1E8D5,#E3D6BA)", borderRadius: 6,
     boxShadow: "0 30px 70px rgba(0,0,0,0.6), inset 0 0 0 1px rgba(120,90,50,0.25)",
     display: "flex", flexDirection: "column", overflow: "hidden",
@@ -2020,7 +2022,7 @@ const styles = {
 
   /* settings modal */
   settingsCard: {
-    position: "relative", width: "100%", maxWidth: 360, maxHeight: "86vh",
+    position: "relative", width: "100%", maxWidth: 360, 
     background: "linear-gradient(135deg,#F1E8D5,#E3D6BA)", borderRadius: 16,
     boxShadow: "0 30px 70px rgba(0,0,0,0.6), inset 0 0 0 1px rgba(120,90,50,0.25)",
     display: "flex", flexDirection: "column", overflow: "hidden",
@@ -2325,6 +2327,21 @@ body { touch-action: manipulation; } /* no double-tap zoom on buttons */
     max-width: none; width: 100%; height: 100vh; border-radius: 0; box-shadow: none;
   }
   @supports (height: 100dvh) { .app-gate { height: 100dvh; } }
+}
+
+/* ---- modals (book page, settings): always fit the visible screen ----
+   vh on phones includes the area behind the browser bars, so cards sized with it
+   overflowed and their close buttons ended up above the top of the screen.
+   margin:auto centres the card but, unlike align-items:center, never pushes it
+   past the top edge if it is still too tall. */
+.modal-card {
+  margin: auto 0; flex-shrink: 0;
+  max-height: min(760px, calc(100vh - 36px));
+}
+@supports (height: 100svh) {
+  .modal-card {
+    max-height: min(760px, calc(100svh - max(18px, env(safe-area-inset-top)) - max(18px, env(safe-area-inset-bottom))));
+  }
 }
 
 button:focus-visible, .field:focus-visible, .tabbtn:focus-visible {
