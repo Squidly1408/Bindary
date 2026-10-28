@@ -2252,6 +2252,15 @@ const CSS = `
 html, body { margin: 0; height: 100%; }
 #root, #app { height: 100%; }
 
+/* ---- mobile: stop the page drifting sideways / zooming while tapping around ---- */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+html, body { overflow-x: hidden; overscroll-behavior: none; }
+body { touch-action: manipulation; } /* no double-tap zoom on buttons */
+/* iOS Safari zooms into any focused field under 16px and leaves the page zoomed */
+@media (hover: none) and (pointer: coarse) {
+  input, textarea, select { font-size: 16px !important; }
+}
+
 /* ---- responsive shell: full-screen on phones, app card on larger screens ---- */
 .app-root { min-height: 100vh; display: flex; justify-content: center; align-items: stretch; background: #0B0E13; }
 .app-phone {
